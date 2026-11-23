@@ -115,6 +115,19 @@ def test_deleting_a_document_removes_only_its_chunks(store):
     assert store.count("doc2") == 1
 
 
+def test_chunks_are_counted_by_kind(store):
+    assert store.count_by_type() == {"text": 0, "table": 0, "figure": 0}
+
+    put(
+        store,
+        make_chunk("doc1:00000", "Some text."),
+        make_chunk("doc1:00001", "More text."),
+        make_chunk("doc1:00002", "Table: Charges", element_type=ElementType.TABLE),
+    )
+
+    assert store.count_by_type() == {"text": 2, "table": 1, "figure": 0}
+
+
 def test_a_different_vector_size_is_refused_with_an_explanation(store):
     put(store, make_chunk("doc1:00000", "Indexed with the first model."))
     chunk = make_chunk("doc1:00001", "Indexed with another model.")

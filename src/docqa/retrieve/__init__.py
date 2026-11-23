@@ -17,7 +17,7 @@ from docqa.index import searchable_text
 from docqa.index.embedder import Embedder
 from docqa.index.store import ChunkStore
 from docqa.retrieve.reranker import Reranker
-from docqa.schema import Chunk, RetrievalResult, ScoredChunk
+from docqa.schema import Chunk, RetrievalResult, RetrievalTimings, ScoredChunk
 
 
 def reciprocal_rank_fusion(rankings: Sequence[Sequence[str]], k: int) -> list[tuple[str, float]]:
@@ -56,6 +56,18 @@ def rank_candidates(
     rerank score, best rerank score first. ``retrieve`` builds on this. Evaluation calls
     it directly, because it needs the scores before a threshold has been chosen.
     """
+    return _rank(question, config, access_groups, embedder, store, reranker)[0]
+
+
+def _rank(
+    question: str,
+    config: Config,
+    access_groups: Sequence[str] | None,
+    embedder: Embedder | None,
+    store: ChunkStore | None,
+    reranker: Reranker | None,
+) -> tuple[list[ScoredChunk], RetrievalTimings]:
+    """As ``rank_candidates``, and also says how long each step took."""
     question = question.strip()
     if not question:
         raise ValueError("The question is empty.")
@@ -66,10 +78,12 @@ def rank_candidates(
     groups = list(access_groups) if access_groups else [config.retrieval.default_access_group]
     limit = config.retrieval.candidates
 
+    started = time.perf_counter()
     query = embedder.embed([question])[0]
+    embedded = time.perf_counter()
+
     dense = store.search_dense(query.dense, groups, limit)
     sparse = store.search_sparse(query.sparse, groups, limit)
-
     chunks: dict[str, Chunk] = {}
     for chunk, _score in (*dense, *sparse):
         chunks.setdefault(chunk.chunk_id, chunk)
@@ -77,17 +91,24 @@ def rank_candidates(
         [[chunk.chunk_id for chunk, _ in dense], [chunk.chunk_id for chunk, _ in sparse]],
         config.retrieval.rrf_k,
     )[:limit]
+    searched = time.perf_counter()
     if not fused:
-        return []
+        return [], RetrievalTimings(embed_s=embedded - started, search_s=searched - embedded)
 
     reranker = reranker or resources.get_reranker(config)
     rerank_scores = reranker.score(question, [searchable_text(chunks[cid]) for cid, _ in fused])
+    timings = RetrievalTimings(
+        embed_s=embedded - started,
+        search_s=searched - embedded,
+        rerank_s=time.perf_counter() - searched,
+        candidates=len(fused),
+    )
     scored = [
         ScoredChunk(chunk=chunks[chunk_id], fusion_score=fusion_score, rerank_score=rerank_score)
         for (chunk_id, fusion_score), rerank_score in zip(fused, rerank_scores, strict=True)
     ]
     # sorted() is stable, so chunks with equal rerank scores keep their fusion order.
-    return sorted(scored, key=lambda item: item.rerank_score or 0.0, reverse=True)
+    return sorted(scored, key=lambda item: item.rerank_score or 0.0, reverse=True), timings
 
 
 def retrieve(
@@ -129,9 +150,7 @@ def retrieve(
             "the value it proposes in config.yaml."
         )
     started = time.perf_counter()
-    ranked = rank_candidates(
-        question, config, access_groups, embedder=embedder, store=store, reranker=reranker
-    )
+    ranked, timings = _rank(question, config, access_groups, embedder, store, reranker)
     top = tuple(ranked[: config.retrieval.top_k])
     best_score = top[0].rerank_score if top else None
     return RetrievalResult(
@@ -140,4 +159,5 @@ def retrieve(
         found=best_score is not None and best_score >= threshold,
         best_score=best_score,
         elapsed_s=time.perf_counter() - started,
+        timings=timings,
     )

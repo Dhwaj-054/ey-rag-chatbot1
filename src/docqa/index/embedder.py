@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from docqa.config import EmbeddingConfig
+from docqa.quantize import quantize_if_asked
 
 
 class EmbeddingError(Exception):
@@ -51,6 +52,9 @@ class BGEM3Embedder:
       chunks of up to 800 tokens without saying so);
     - ``use_fp16`` comes from the configuration and must stay false on a CPU.
 
+    With ``embedding.quantize`` the weights are held as 8-bit numbers, which is faster
+    on a CPU and changes the vectors slightly (see ``docqa.quantize``).
+
     Raises:
         EmbeddingError: The model's files are not on this machine, or loading failed.
     """
@@ -76,6 +80,10 @@ class BGEM3Embedder:
                 f"The embedding model {config.model!r} could not be loaded. Is it on this "
                 f"machine? ({type(exc).__name__}: {_first_line(exc)})"
             ) from exc
+        self.quantized = quantize_if_asked(
+            self._model.model, config.quantize, f"The embedding model {config.model}"
+        )
+        """True if the model runs with 8-bit weights (``embedding.quantize``)."""
 
     def embed(self, texts: Sequence[str]) -> list[Embedding]:
         if not texts:

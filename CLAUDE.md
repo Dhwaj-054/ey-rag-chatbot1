@@ -28,7 +28,7 @@ Before doing anything, read `machine.md` (hardware, OS, what is installed, netwo
 | Reranker | `BAAI/bge-reranker-v2-m3` |
 | Vector store | Qdrant local mode: `QdrantClient(path="data/qdrant")` |
 | Metadata and logs | SQLite |
-| Chat UI | Streamlit |
+| Chat UI | The project's own web page (plain HTML, CSS, JavaScript) served by Starlette and uvicorn. Replaced Streamlit on 2026-11-23, at my request |
 | Tests | pytest |
 
 This will later move to a GPU server (vLLM, Qdrant server). Keep that move a config change: put all LLM calls behind one client module that talks to Ollama's OpenAI-compatible endpoint, and read the Qdrant location and every model name from `config.yaml`. If Qdrant local mode lacks a feature, implement it in Python (for example, do the rank fusion yourself) rather than switching to a server.
@@ -42,12 +42,12 @@ eval/questions.csv    test questions: question, expected_answer, source_doc, pag
 eval/results/         evaluation output
 data/                 generated: parsed JSON, figure crops, Qdrant, SQLite (git-ignored)
 models/               Docling's own models, downloaded once (git-ignored)
-src/docqa/            ingest/  index/  retrieve/  generate/  app/  evaluate.py
+src/docqa/            ingest/  index/  retrieve/  generate/  web/  evaluate.py  stats.py
 tests/
-scripts/              one-off helpers (build_manifest.py)
+scripts/              helpers (build_manifest.py, compare_with_release.py)
 config.yaml
 machine.md  requirements.md  notes/
-README.md  HANDOVER.md  design.md  AGENTS.md  COPILOT_PROMPT.md
+README.md  HANDOVER.md  design.md  AGENTS.md  COPILOT_PROMPT.md  COPILOT_UPDATE.md
 ```
 
 ## How the pipeline must behave
@@ -73,15 +73,16 @@ README.md  HANDOVER.md  design.md  AGENTS.md  COPILOT_PROMPT.md
 - If two documents conflict, show both with their effective dates rather than picking one.
 
 **UI and logging**
-- Streamlit chat with streamed output (answers are slow on CPU). Show citations, and let the user expand each source: render tables as HTML and show figure images.
-- Log every query to SQLite: timestamp, question, retrieved chunk IDs and scores, answer, latency, model names.
+- Web chat page with streamed output (answers are slow on CPU). Show citations, and let the user expand each source: render tables as HTML and show figure images.
+- A side panel lists the ingested documents by a short name, with the full title on hover, and shows statistics: documents, pages, passages, questions asked, typical times.
+- Log every query to SQLite: timestamp, question, retrieved chunk IDs and scores, answer, latency, time per step, model names.
 
 ## Phases
 
 Build one phase at a time. At the end of each: run the tests, commit, tell me what was built and what you could not verify, then wait for my review.
 
 0. **Setup.** Check `machine.md`, create the venv, install dependencies, confirm the Ollama models respond, run a smoke test on one document.
-1. **Text and tables.** Ingestion, indexing, retrieval, cited answers, Streamlit UI.
+1. **Text and tables.** Ingestion, indexing, retrieval, cited answers, chat UI.
 2. **Figures, flowcharts, scanned pages.**
 3. **Evaluation.** A script that runs `eval/questions.csv` and reports, per question type: correct page in top 5, citation correctness, refusal accuracy and latency, with a column left for my manual judgement of answer correctness.
 
@@ -97,22 +98,26 @@ Out of scope until I ask: login and role management, PII masking, monitoring, mu
 
 ## Commands (keep this section current as you build)
 
-Run these from the project folder with the venv active. On the laptop the code was
-written on, the venv lives outside OneDrive; `machine.md` says why and how to rebuild
-it. `HANDOVER.md` has the setup for a new machine.
+Run these from the project folder with the venv active. `machine.md` describes the two
+laptops in use. On the one the code is written on, the venv lives outside OneDrive.
+`HANDOVER.md` has the setup for a new machine, the steps to update an existing copy,
+and what to try to make answers faster.
 
-State on 2026-11-20: every command below exists. None has been run with real models
-yet (`HANDOVER.md` says what was checked). The fast tests pass: 347.
+State on 2026-11-23: every command below exists. Release 2026-11-20 ran with the real
+models on the second laptop. The changes of 2026-11-23 (chat screen, shorter prompts,
+ingestion in steps) have not been run with real models yet (`HANDOVER.md` says what
+was checked). The fast tests pass: 460.
 
 ```
-C:\Users\PX461CK\.venvs\docqa\Scripts\Activate.ps1   # activate the venv (PowerShell)
+& "$env:USERPROFILE\.venvs\docqa\Scripts\Activate.ps1"   # activate the venv (PowerShell, on the laptop the code is written on)
 
 python -m docqa.check_env             # PASS/FAIL: Python, packages, Ollama, models, Qdrant
 pytest -m "not slow"                  # fast tests, no model needed
-pytest -m slow                        # tests that need the real models (never run yet)
+pytest -m slow                        # tests that need the real models (15)
 
 python -m docqa.ingest docs --limit 3 # parse, describe, chunk, index: at most 3 new or changed files
 python -m docqa.ingest docs --no-figures   # the same without calling the vision model
+python -m docqa.ingest docs --ingested-only   # bring what is indexed up to date; start nothing new
 python -m docqa.ingest --list         # what has been ingested
 python -m docqa.ingest --help         # --force, --yes, --prune, --allow-flagged
 
@@ -120,7 +125,9 @@ python -m docqa.evaluate --suggest-threshold   # propose retrieval.rerank_score_
 python -m docqa.evaluate --retrieval-only      # judge the search alone, no answer model
 python -m docqa.evaluate              # run the test questions, write eval/results/<time>/
 
-streamlit run src/docqa/app/main.py   # chat UI. Stop it before ingesting or evaluating
+python -m docqa.web --open            # chat UI at http://127.0.0.1:8000. Stop it before ingesting or evaluating
+python -m docqa.stats                 # what is indexed, and the typical time of each step of an answer
 
 python scripts/build_manifest.py --force       # rebuild manifest.csv from RBI_Documents_Index.xlsx
+python scripts/compare_with_release.py FOLDER  # what an older copy of the project changed
 ```

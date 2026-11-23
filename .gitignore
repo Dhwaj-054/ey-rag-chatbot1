@@ -42,3 +42,6 @@ dist/
 Thumbs.db
 desktop.ini
 ~$*
+
+# Notes about one particular machine that must not be published (see machine.md)
+machine.local.md

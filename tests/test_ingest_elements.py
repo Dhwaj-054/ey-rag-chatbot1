@@ -17,6 +17,7 @@ from tests.docling_samples import (
     SPLIT_PARAGRAPH_FIRST,
     SPLIT_PARAGRAPH_SECOND,
     lending_policy,
+    with_decorations,
     with_table_of_contents,
 )
 
@@ -122,6 +123,22 @@ def test_a_small_picture_without_a_caption_is_left_out(extraction, tmp_cfg):
     """The logo covers well under figures.min_page_fraction of its page."""
     assert extraction.small_figures_skipped == 1
     assert len(list((tmp_cfg.paths.figures_dir / "policy01").glob("*.png"))) == 1
+
+
+def test_banners_and_stamps_are_left_out_unless_they_have_a_caption(tmp_cfg):
+    """Each picture left out is a call to the vision model saved."""
+    extraction = extract_elements(with_decorations(), make_info("deco0001"), tmp_cfg)
+
+    figures = [element for element in extraction.elements if element.element_type is ElementType.FIGURE]
+    sizes = []
+    for figure in figures:
+        with Image.open(figure.image_path) as crop:
+            sizes.append(crop.size)
+
+    assert extraction.small_figures_skipped == 2
+    assert sizes == [(600, 400), (1000, 60)]
+    assert [figure.text for figure in figures] == ["", "Figure 2: Timeline of the scheme"]
+    assert len(list((tmp_cfg.paths.figures_dir / "deco0001").glob("*.png"))) == 2
 
 
 def test_a_paragraph_that_runs_over_a_page_break_records_where(extraction):

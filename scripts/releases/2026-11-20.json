@@ -1,0 +1,154 @@
+{
+ "release": "2026-11-20",
+ "commit": "62876b3",
+ "files": {
+  ".github/copilot-instructions.md": "60d94e87d0d1e978c1ae7136877600985076379697382c6a99da6ee4b7ddb4ca",
+  ".gitignore": "6b39148f38b3fb5272277af571001ae81ff3e6cc153ecc174aa89db415b17a35",
+  ".streamlit/config.toml": "5ba62a32d6170c1a35708f8ba7c09583b2a39a8a218277b9477b54aadb8caec8",
+  "AGENTS.md": "7cd5f677fa3c7e1352d58d5bd409d6517b24a790d9f7340ada6351e1b1787a23",
+  "CLAUDE.md": "1133829c457d2ba05d8492d1b72ec115207e3b533857210afcc2517137f36e46",
+  "COPILOT_PROMPT.md": "66b96fecbf3aabce623ee47cf2fded856126d9db8446b0e3b31492b2b267580f",
+  "HANDOVER.md": "3f2076f777305828c55d488f2ae6fb2fc13a97ffc19b0520c6f0a1dfc421d7ea",
+  "README.md": "4f20441197d9920bd8254c60ef912acc98bf1e2d62401c05c3ca32e05b0fa1fe",
+  "config.yaml": "c33038d4908bcbf18ea8638a5d70c94e9e1296fb4e20549a8fac4651ba1f6922",
+  "design.md": "aa0941736216451e5821f7c1b6ff47e32de64b2e4baa55543e1c48b7f8c8d139",
+  "eval/README.md": "07cd1e21961c4e39f639cc1133db2c7ea0d8631004e2d8e64be3d4284e409644",
+  "eval/questions.csv": "94b4f2d8b3e9a015f5eaad214c0298e0363bf0df945595a6ebca58c226dce522",
+  "machine.md": "56402f399405c8d9dc2ddca08fe5b4b7cad0c3b562b3fae3eed58d44da935daa",
+  "manifest.csv": "9a67bf48448e32b63a9ed47cd6cf352e6b6a3972bd23190f81464d431be6dd04",
+  "notes/.gitkeep": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "pyproject.toml": "59d0de5a79348dca73338bdd80610d01fdbe0bb01c7215a583465d414b58098f",
+  "requirements-lock.txt": "925df474fec76a787b7ea9168b2b9819e10c01c05df90085318923d876128bc2",
+  "requirements.md": "fce9a70600d23e4c27c79ccf6d4a5366794537455f3bbe4e0be4d1c24bfacc99",
+  "requirements.txt": "489a840121854db7525595d047db7e776dca2fc15544eac59a646471811567eb",
+  "scripts/build_manifest.py": "ab2a6415bd333de9b0679e953414471b25bada23fb31c30676f6ac96df49f609",
+  "src/docqa/__init__.py": "1c8b214e73f4dfae47666b2f8df857d2a83ec9829e8f77596e4745f711ad765b",
+  "src/docqa/app/__init__.py": "018303462bc19b6b7d68ad2bf617d7cc4c9b399fe6fca7e0a9ac2a2b92cafe66",
+  "src/docqa/app/main.py": "0f8f9f8c86e28743f5474033afe042a771377c9f2aedff04c0d2966d166e552a",
+  "src/docqa/check_env.py": "cfcae6f2ef8ff7d4d35854f3cf788c78323e777131373f0c4c68fc60235614b5",
+  "src/docqa/config.py": "c999f4c604cc8cd5c6c059df4cce563f8f5be27ae429b348a3bfee62191e5af2",
+  "src/docqa/db.py": "3a514fc7b87c96d60b95aea079d9b7c55c791b2408022f4824aed7c5bce37ec0",
+  "src/docqa/evaluate.py": "80bd44ce1512d1766bc6160caaa2f2b2e1613ab8a391593485cc62cb17cdedb2",
+  "src/docqa/generate/__init__.py": "06f223cfa913c2577a6e1aabbe21283c50003ebbe6a8f7b36de78597e2c64a41",
+  "src/docqa/generate/citations.py": "589759754e5fa365a487521bf283d22b31f3496c72febf1690750bc3da04b599",
+  "src/docqa/generate/prompt.py": "0516235240aceff107217f11e670c70ab58d6ad9e39ae4a8c34185bd6d31d167",
+  "src/docqa/index/__init__.py": "b5ff1950bacc92427dc7b76fae7c5985a19f214bd517ae2fffabe0a82cfd1c79",
+  "src/docqa/index/embedder.py": "a68f34292b51d186038da2558e435fc20d3e566323fd2d483698ddbf4fa194f2",
+  "src/docqa/index/store.py": "22e9ac5637dc0a70e3082797e3e967349e1307915dd9a04fa162946a2b921318",
+  "src/docqa/ingest/__init__.py": "7100efd40bd474500d0d732d894002f1e9f11a0211b68de48283bfa09aa97f14",
+  "src/docqa/ingest/__main__.py": "b316cc79d9f6c4c0aff257f611649717eb2961128df1509e8bbd97ef3a7087a0",
+  "src/docqa/ingest/chunker.py": "39fa9dfd6fdc9bc447ac7653fe01d99724db0caf85d986cbaf14f7b7a1d5df78",
+  "src/docqa/ingest/documents.py": "4b3ef87f8c073ec74ce12168dce181531a828e53a75291c0373dc00328181fa7",
+  "src/docqa/ingest/elements.py": "d9d7c67d76bb2295f8e7a7addf359e7003942400994cd63dfb3a05fe1a58bbdb",
+  "src/docqa/ingest/figures.py": "ffcaa7e9ae83e6f97291d43361c77683b200409a14365fd71d099202a18e7bfb",
+  "src/docqa/ingest/parser.py": "f878f835cfe3c093eaf8865ac77c024ca1d0dcb744652e40066d8e0d0d1819a6",
+  "src/docqa/ingest/pipeline.py": "176e57222bd5e6a836cdaacb18a5f6155af6a7eeee9ecb959adfb4d11e81a4a7",
+  "src/docqa/ingest/screening.py": "c141ef098f62960c9e9b108182ff3144a780b4782920fa6647c1672b42586426",
+  "src/docqa/ingest/tables.py": "8e9981238b2627b01161aa4dd8056623637e678866eddc667477e5d2deb38671",
+  "src/docqa/llm.py": "d895b201a2eb77d4735928a54d11ca2e0295fc7617cb43e42f31f3a041d448a9",
+  "src/docqa/resources.py": "562d05a1618c863810d68771e46df0fd46f6277c0d3d81ca616a42f6305cc446",
+  "src/docqa/retrieve/__init__.py": "108d707de9481dacd6311fd739be517d2c850580473cc6a7a09a85c9196242bd",
+  "src/docqa/retrieve/reranker.py": "451842dd8a04de05d75d75eb4bd347cb18d221b0d0fa626246fa833f3cc81ba0",
+  "src/docqa/schema.py": "df603114a3527340f9b75cee8b9865d72e3605c00f796e73ff239a4e43dc0d20",
+  "src/docqa/tokens.py": "924f147d7bdb7763fc8f8d0c72b2af17f9b3c4f30c7e7faa8cbbe5b54837d22f",
+  "tests/conftest.py": "e6e0466312531b885af608cedd822c688ba163405c5c479bc6b1a8c327d866b6",
+  "tests/docling_samples.py": "0fa5584ba590711cef37371323f9aee5aeca2cca397c8833a8cd4758314940d9",
+  "tests/fakes.py": "8062b09f2d599800b14272edac232482959b218b575fb720783fde888049d6d4",
+  "tests/pdf_samples.py": "1bdd8cb966eb3f96d7e516cf52fa3d62672970e84d289a835d791bf0c2885309",
+  "tests/test_app.py": "ae7fd87ccf3fa348540783a0cae15459594a1fe9afd3aa0146b9f7c3c5c14ed4",
+  "tests/test_check_env.py": "08cb366a2cc1aa71d1edee6ea2feaa5377185abea326b3c2c5304ad3a0bc8c17",
+  "tests/test_config.py": "5ed7687552ee164908cb2c26a7739e2d1d7c18c33a8d15696667084d2fbf9faa",
+  "tests/test_db.py": "538ab7bb1ee5b678849d368ef3445e063b24add68f35b005f1b5952e6e3a4597",
+  "tests/test_evaluate.py": "bd4044b809a3a7b2bfb5fd68eab0ac792f5685a2c8e42db8ecd92fcb7ec19bde",
+  "tests/test_generate.py": "20dd02e11cc8066ff3864dbc6bc1e080dd0c73fd9e78c53a74b03619c3fa2d91",
+  "tests/test_index_retrieve.py": "565e7931c2d95944b7edb243a071f1018c058edc9cfffee1aeacbb0cc18432c7",
+  "tests/test_ingest_chunker.py": "dd70e218fc938f85aac56af53498e7d51a3afbed521c9da67cef01cd29390f95",
+  "tests/test_ingest_documents.py": "4705ea0d32eb0f3cfc3cc0816e639d6b8e80b77d69cee7a863c26bc04878eb42",
+  "tests/test_ingest_elements.py": "66fd6b8a60cdd31e49bf62e9118cd78bfde8ee83a68e662c6ff8476d9ebd1d86",
+  "tests/test_ingest_figures.py": "a3a4d62e206b12dee638577db93ece0eb9b73406257e0928e63b59967a1958ea",
+  "tests/test_ingest_parser.py": "b5b49919263652c7a300af06469fa5683565c807d1bae08c806698231cba055a",
+  "tests/test_ingest_pipeline.py": "83a408d4395ff32b104e2a52b0a74c5cc7a66156a7a9a96b53dfc6530e46d311",
+  "tests/test_llm.py": "c4d3c6b7c478bc74d2708fd8942a3317c85dd04ba0beb538e0870acd5a87bf45",
+  "tests/test_package.py": "dbb48881c9e567ce65bf56e2bd20eaa6e50293b26dd4b00628b61a091c402939",
+  "tests/test_pdf_samples.py": "01953aac6b03b4d5da9c1c495b3641b7fc512438286ff8ed0cf960cc4f2f448d",
+  "tests/test_real_models.py": "8845f36bd2274cf919ab6081fd03bb05aa8d638101a720f3746d1256f6ee5cec",
+  "tests/test_store.py": "8ed8636dad3f41afa314e5f577d2544fbd66a61e6db8d10abec76d7a0fab0100"
+ },
+ "config": {
+  "paths": {
+   "docs_dir": "docs",
+   "data_dir": "data",
+   "parsed_dir": "data/parsed",
+   "figures_dir": "data/figures",
+   "sqlite_path": "data/docqa.sqlite",
+   "manifest": "manifest.csv",
+   "eval_questions": "eval/questions.csv",
+   "eval_results_dir": "eval/results"
+  },
+  "llm": {
+   "base_url": "http://localhost:11434/v1",
+   "allow_remote": false,
+   "api_key_env": null,
+   "answer_model": "qwen2.5:7b",
+   "vision_model": "qwen2.5vl:7b",
+   "temperature": 0.0,
+   "max_tokens": 1024,
+   "connect_timeout_s": 10,
+   "request_timeout_s": 600
+  },
+  "parsing": {
+   "artifacts_path": "models/docling",
+   "ocr": true,
+   "ocr_languages": [],
+   "images_scale": 2.0,
+   "table_mode": "accurate",
+   "num_threads": 4
+  },
+  "figures": {
+   "describe": true,
+   "min_page_fraction": 0.02
+  },
+  "screening": {
+   "enabled": true,
+   "flag_at": 3
+  },
+  "ingestion": {
+   "confirm_above_files": 25
+  },
+  "embedding": {
+   "model": "BAAI/bge-m3",
+   "use_fp16": false,
+   "batch_size": 4,
+   "max_length": 1024
+  },
+  "reranker": {
+   "model": "BAAI/bge-reranker-v2-m3",
+   "use_fp16": false,
+   "batch_size": 4,
+   "max_length": 1024,
+   "normalize": true
+  },
+  "qdrant": {
+   "path": "data/qdrant",
+   "url": null,
+   "collection": "docqa_chunks"
+  },
+  "chunking": {
+   "min_tokens": 400,
+   "max_tokens": 800,
+   "overlap_min_tokens": 50,
+   "overlap_max_tokens": 100
+  },
+  "retrieval": {
+   "candidates": 30,
+   "top_k": 6,
+   "rrf_k": 60,
+   "rerank_score_threshold": null,
+   "default_access_group": "all"
+  },
+  "generation": {
+   "not_found_message": "I could not find this in the documents.",
+   "evidence_char_budget": 20000
+  }
+ }
+}

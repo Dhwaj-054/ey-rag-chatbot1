@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BFSI document Q&amp;A</title>
+  <!-- Everything this page uses is served from this machine. Nothing is fetched from elsewhere. -->
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="app" id="app">
+    <aside class="sidebar" id="sidebar" aria-label="Indexed documents and figures">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">Q&amp;A</div>
+        <div>
+          <div class="brand-name">BFSI document Q&amp;A</div>
+          <div class="brand-sub">Every answer cites its document and page</div>
+        </div>
+      </div>
+
+      <div class="status" id="status" role="status">
+        <span class="dot" aria-hidden="true"></span>
+        <span id="status-text">Starting</span>
+      </div>
+
+      <section class="panel" aria-labelledby="glance-title">
+        <h2 id="glance-title">At a glance</h2>
+        <div class="tiles" id="tiles"></div>
+        <div class="facts" id="facts"></div>
+      </section>
+
+      <section class="panel docs" aria-labelledby="docs-title">
+        <div class="panel-head">
+          <h2 id="docs-title">Indexed documents</h2>
+          <span class="count" id="doc-count"></span>
+        </div>
+        <input type="search" id="doc-filter" placeholder="Filter by name" aria-label="Filter documents by name" autocomplete="off">
+        <ul class="doc-list" id="doc-list"></ul>
+        <p class="empty" id="doc-empty" hidden></p>
+      </section>
+
+      <p class="fine">
+        Each question is answered on its own: earlier questions are not taken into account.
+        Check every answer against the pages it cites.
+      </p>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <button type="button" class="icon-button" id="toggle-sidebar" aria-label="Show or hide the document list" aria-expanded="true">
+          <span aria-hidden="true">&#9776;</span>
+        </button>
+        <div class="models" id="models"></div>
+      </header>
+
+      <div class="banner" id="banner" hidden></div>
+
+      <div class="thread" id="thread">
+        <div class="welcome" id="welcome">
+          <h1>Ask the documents</h1>
+          <p>Type a question below. The answer is written from the indexed documents only, and every statement names the document and page it comes from.</p>
+          <ul>
+            <li>The passages that were found appear first, while the answer is being written.</li>
+            <li>Open a passage to read it. Tables are shown as tables, figures as pictures.</li>
+            <li>If the documents do not hold the answer, the reply says so.</li>
+          </ul>
+        </div>
+      </div>
+
+      <form class="composer" id="composer" autocomplete="off">
+        <textarea id="question" rows="1" maxlength="2000" placeholder="Ask a question about the documents" aria-label="Your question"></textarea>
+        <button type="submit" class="primary" id="send">Ask</button>
+        <button type="button" class="secondary" id="stop" hidden>Stop</button>
+      </form>
+    </main>
+  </div>
+
+  <div class="tooltip" id="tooltip" role="tooltip" hidden></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

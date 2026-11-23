@@ -20,6 +20,7 @@ from docqa.ingest.figures import (
     describe_figure,
     describe_figure_cached,
     description_text,
+    image_for_model,
     is_informative,
     parse_reply,
 )
@@ -168,11 +169,62 @@ def test_the_vision_model_gets_the_image_the_instruction_and_the_system_prompt(t
     assert description.figure_type == "flowchart"
     request = llm.requests[0]
     assert request["model"] == "qwen2.5vl:7b"
+    assert request["max_tokens"] == tmp_cfg.figures.max_tokens == 700
     assert request["messages"][0] == {"role": "system", "content": SYSTEM_PROMPT}
     text_part, image_part = request["messages"][1]["content"]
     assert text_part["text"] == build_prompt("Figure 1: Process")
     sent = base64.b64decode(image_part["image_url"]["url"].removeprefix("data:image/png;base64,"))
     assert sent == figure.image_path.read_bytes()
+
+
+def png_bytes(width: int, height: int) -> bytes:
+    import io
+
+    out = io.BytesIO()
+    Image.new("RGB", (width, height), "white").save(out, format="PNG")
+    return out.getvalue()
+
+
+def size_of(image: bytes) -> tuple[int, int]:
+    import io
+
+    with Image.open(io.BytesIO(image)) as picture:
+        return picture.size
+
+
+def test_a_large_crop_is_scaled_down_for_the_vision_model_and_a_small_one_is_not():
+    """Fewer pixels are read faster. The picture keeps its proportions."""
+    page_sized = png_bytes(1190, 1684)  # a full A4 page at 144 dpi
+    wide = png_bytes(2400, 600)
+    small = png_bytes(640, 420)
+
+    assert size_of(image_for_model(page_sized, 1280)) == (905, 1280)
+    assert size_of(image_for_model(wide, 1280)) == (1280, 320)
+    assert image_for_model(small, 1280) is small
+    assert image_for_model(png_bytes(1280, 900), 1280) == png_bytes(1280, 900)
+
+
+def test_the_scaled_picture_is_sent_but_the_cache_key_is_the_file_on_disk(temp_config, tmp_path):
+    def small_limit(raw):
+        raw["figures"]["max_side_px"] = 300
+
+    config = temp_config(small_limit)
+    path = tmp_path / "big.png"
+    Image.new("RGB", (1200, 800), "white").save(path)
+    element = Element("d", "d:e00001", 3, None, ElementType.FIGURE, "", image_path=path)
+    llm = ScriptedLLM(config, FLOWCHART_REPLY)
+    database = Database(config.paths.sqlite_path)
+
+    description = describe_figure(element, llm.client, config, db=database)
+
+    image_part = llm.requests[0]["messages"][1]["content"][1]
+    sent = base64.b64decode(image_part["image_url"]["url"].removeprefix("data:image/png;base64,"))
+    assert size_of(sent) == (300, 200)
+    import hashlib
+
+    assert description.image_sha256 == hashlib.sha256(path.read_bytes()).hexdigest()
+    with Image.open(path) as on_disk:
+        assert on_disk.size == (1200, 800)  # the file the chat screen shows is untouched
 
 
 def test_an_unchanged_figure_is_never_described_twice(tmp_cfg, figure, tmp_path):

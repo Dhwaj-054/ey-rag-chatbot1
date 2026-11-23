@@ -73,6 +73,10 @@ class LLMConfig(_Section):
     base_url: NonEmptyStr
     allow_remote: bool = False
     api_key_env: str | None = None
+    vision_base_url: NonEmptyStr | None = None
+    """Where the vision model is served, if that is not ``base_url``."""
+    vision_api_key_env: str | None = None
+    """The API key variable for ``vision_base_url``. Read only when that is set."""
     answer_model: NonEmptyStr
     vision_model: NonEmptyStr
     temperature: float = Field(ge=0.0, le=2.0)
@@ -80,19 +84,50 @@ class LLMConfig(_Section):
     connect_timeout_s: float = Field(gt=0)
     request_timeout_s: float = Field(gt=0)
 
+    @model_validator(mode="after")
+    def _vision_key_needs_its_address(self) -> LLMConfig:
+        if self.vision_api_key_env and not self.vision_base_url:
+            raise ValueError(
+                "vision_api_key_env is set but vision_base_url is not. Without vision_base_url "
+                "the vision model uses base_url and api_key_env. Set vision_base_url, or "
+                "remove vision_api_key_env"
+            )
+        return self
+
+    def for_vision(self) -> LLMConfig:
+        """These settings as the vision model's client needs them.
+
+        They are the same settings unless ``vision_base_url`` names another server. Then
+        that address and its own API key variable replace ``base_url`` and
+        ``api_key_env``, so a key is never sent to a server it was not issued for.
+        """
+        if not self.vision_base_url:
+            return self
+        return self.model_copy(
+            update={"base_url": self.vision_base_url, "api_key_env": self.vision_api_key_env}
+        )
+
 
 class ParsingConfig(_Section):
     artifacts_path: ProjectPath | None = None
-    ocr: bool
+    ocr: bool | Literal["auto"]
+    """true: always. false: never. "auto": only for a document that has a page without
+    a text layer."""
+    scanned_page_max_chars: int = Field(ge=0)
     ocr_languages: list[str]
     images_scale: float = Field(gt=0)
     table_mode: Literal["accurate", "fast"]
-    num_threads: int = Field(gt=0)
+    num_threads: int = Field(ge=0)
+    """0 means one thread per physical core of this machine."""
 
 
 class FiguresConfig(_Section):
     describe: bool
     min_page_fraction: float = Field(ge=0.0, lt=1.0)
+    min_side_px: int = Field(ge=0)
+    max_aspect_ratio: float = Field(ge=1.0)
+    max_side_px: int = Field(gt=0)
+    max_tokens: int = Field(gt=0)
 
 
 class ScreeningConfig(_Section):
@@ -102,11 +137,13 @@ class ScreeningConfig(_Section):
 
 class IngestionConfig(_Section):
     confirm_above_files: int = Field(gt=0)
+    group_files: int = Field(gt=0)
 
 
 class EmbeddingConfig(_Section):
     model: NonEmptyStr
     use_fp16: bool
+    quantize: bool
     batch_size: int = Field(gt=0)
     max_length: int = Field(gt=0)
 
@@ -114,6 +151,7 @@ class EmbeddingConfig(_Section):
 class RerankerConfig(_Section):
     model: NonEmptyStr
     use_fp16: bool
+    quantize: bool
     batch_size: int = Field(gt=0)
     max_length: int = Field(gt=0)
     normalize: bool
@@ -165,6 +203,23 @@ class RetrievalConfig(_Section):
 class GenerationConfig(_Section):
     not_found_message: NonEmptyStr
     evidence_char_budget: int = Field(gt=0)
+    evidence_score_ratio: float = Field(ge=0.0, le=1.0)
+
+
+class UIConfig(_Section):
+    host: NonEmptyStr
+    port: int = Field(gt=0, lt=65536)
+    allow_network: bool = False
+    warm_up: bool
+
+    @model_validator(mode="after")
+    def _local_unless_allowed(self) -> UIConfig:
+        if not self.allow_network and self.host not in ("127.0.0.1", "localhost", "::1"):
+            raise ValueError(
+                "host is not this machine. The chat screen would be reachable from the "
+                "network. Use 127.0.0.1, or set allow_network to true on purpose"
+            )
+        return self
 
 
 class Config(_Section):
@@ -172,6 +227,7 @@ class Config(_Section):
 
     paths: PathsConfig
     llm: LLMConfig
+    ui: UIConfig
     parsing: ParsingConfig
     figures: FiguresConfig
     screening: ScreeningConfig

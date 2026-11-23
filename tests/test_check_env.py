@@ -21,6 +21,7 @@ from docqa.check_env import (
     check_python,
     check_qdrant,
     main,
+    remote_notes,
 )
 from docqa.config import Config
 from docqa.llm import LLMClient
@@ -116,6 +117,57 @@ def test_llm_checks_fail_when_the_server_is_not_running(config):
     assert not server.passed and "Cannot reach the LLM server" in server.detail
     assert not answer.passed and "not checked" in answer.detail
     assert not vision.passed and "not checked" in vision.detail
+
+
+def with_llm(config: Config, **changes) -> Config:
+    return config.model_copy(update={"llm": config.llm.model_copy(update=changes)})
+
+
+def test_each_server_is_checked_for_its_own_model(config):
+    """vLLM serves one model per server, so the vision model can have its own address."""
+    config = with_llm(config, vision_base_url="http://localhost:9000/v1")
+    client = client_with_models(config, config.llm.answer_model)
+
+    answer_server, answer, vision_server, vision = check_llm(config, client)
+
+    assert config.llm.base_url in answer_server.name and answer.passed
+    assert "http://localhost:9000/v1" in vision_server.name and vision_server.passed
+    assert not vision.passed and config.llm.vision_model in vision.name
+
+
+def test_what_leaves_the_machine_is_said_in_plain_words(config):
+    assert remote_notes(config) == []  # the project's own settings keep everything here
+
+    answers_hosted = with_llm(
+        config,
+        base_url="https://models.example.com/v1",
+        allow_remote=True,
+        vision_base_url="http://localhost:11434/v1",
+    )
+    everything_hosted = with_llm(config, base_url="https://models.example.com/v1", allow_remote=True)
+
+    (only_note,) = remote_notes(answers_hosted)
+    assert "answer model runs on models.example.com" in only_note
+    assert "Every question" in only_note
+    answer_note, vision_note = remote_notes(everything_hosted)
+    assert "answer model" in answer_note
+    assert "vision model runs on models.example.com" in vision_note and "figure image" in vision_note
+
+
+def test_every_package_the_check_looks_for_is_pinned_in_requirements(project_root):
+    def normal(name: str) -> str:
+        return name.lower().replace("_", "-")
+
+    pinned = {
+        normal(line.split("==")[0].strip())
+        for line in (project_root / "requirements.txt").read_text(encoding="utf-8").splitlines()
+        if "==" in line and not line.lstrip().startswith("#")
+    }
+
+    looked_for = {normal(package) for package, _module in check_env.REQUIRED_PACKAGES}
+
+    assert looked_for - pinned == set()
+    assert "streamlit" not in looked_for
 
 
 # -- embedding model and reranker -----------------------------------------------------
@@ -214,8 +266,29 @@ def test_main_exits_zero_when_everything_passes(canned_checks, project_root, cap
     assert "[PASS] Configuration" in output
     assert "[FAIL]" not in output
     assert "6 passed, 0 failed" in output
-    # The project's config.yaml leaves the threshold unset on purpose; that is a note, not a failure.
-    assert "rerank_score_threshold is not set yet" in output
+    assert "Note:" not in output  # everything is on this machine, and the threshold is set
+
+
+def test_main_notes_a_threshold_that_is_not_set_without_failing(canned_checks, temp_config, capsys):
+    def unset(raw):
+        raw["retrieval"]["rerank_score_threshold"] = None
+
+    canned_checks(qdrant_ok=True)
+
+    assert main(["--config", str(temp_config(unset).config_file)]) == 0
+    assert "rerank_score_threshold is not set yet" in capsys.readouterr().out
+
+
+def test_main_says_what_a_hosted_endpoint_is_sent(canned_checks, temp_config, capsys):
+    def hosted(raw):
+        raw["llm"].update(base_url="https://models.example.com/v1", allow_remote=True)
+
+    canned_checks(qdrant_ok=True)
+
+    assert main(["--config", str(temp_config(hosted).config_file)]) == 0
+    output = capsys.readouterr().out
+    assert "Note: the answer model runs on models.example.com" in output
+    assert "Note: the vision model runs on models.example.com" in output
 
 
 def test_main_exits_one_when_a_check_fails(canned_checks, project_root, capsys):

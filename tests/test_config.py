@@ -41,13 +41,17 @@ def test_project_config_holds_the_values_decided_in_claude_md(config):
     assert config.qdrant.url is None
     assert config.generation.not_found_message == "I could not find this in the documents."
 
-    # Docling's built-in OCR for scanned pages, and picture crops for the vision model.
-    assert config.parsing.ocr is True
+    # Docling's built-in OCR for scanned pages ("auto": only for documents that have
+    # one), and picture crops for the vision model.
+    assert config.parsing.ocr == "auto"
     assert config.figures.describe is True
+    # The stack's models run unchanged unless someone switches the 8-bit option on.
+    assert config.embedding.quantize is False and config.reranker.quantize is False
     # A file that looks like real customer data stops ingestion.
     assert config.screening.enabled is True
-    # The threshold is left unset until it has been chosen from real test questions.
-    assert config.retrieval.rerank_score_threshold is None
+    # A temporary value, set on the laptop that runs the models for its first documents.
+    # It is to be chosen again from real test questions (evaluate --suggest-threshold).
+    assert config.retrieval.rerank_score_threshold == 0.5
 
 
 def test_project_config_does_not_cut_chunks_before_the_models_see_them(config):
@@ -209,6 +213,16 @@ def _qdrant(path, url):
         pytest.param(_set("reranker", "max_length", 512), "reranker.max_length must", id="rerank cut"),
         pytest.param(_set("generation", "evidence_char_budget", 0), "evidence_char_budget", id="budget"),
         pytest.param(_drop("paths", "manifest"), "paths.manifest", id="manifest missing"),
+        pytest.param(_set("parsing", "ocr", "sometimes"), "parsing.ocr", id="ocr word"),
+        pytest.param(_set("parsing", "num_threads", -1), "parsing.num_threads", id="threads"),
+        pytest.param(_set("figures", "max_aspect_ratio", 0.5), "figures.max_aspect_ratio", id="aspect"),
+        pytest.param(_set("figures", "max_side_px", 0), "figures.max_side_px", id="side"),
+        pytest.param(_set("ingestion", "group_files", 0), "ingestion.group_files", id="group"),
+        pytest.param(_drop("embedding", "quantize"), "embedding.quantize", id="quantize missing"),
+        pytest.param(_set("generation", "evidence_score_ratio", 1.5), "evidence_score_ratio", id="ratio"),
+        pytest.param(_drop("ui"), "ui", id="missing ui section"),
+        pytest.param(_set("ui", "port", 70000), "ui.port", id="port"),
+        pytest.param(_set("ui", "host", "0.0.0.0"), "reachable from the network", id="open host"),
         pytest.param(_qdrant("data/qdrant", "http://localhost:6333"), "exactly one", id="both"),
         pytest.param(_qdrant(None, None), "exactly one", id="neither"),
     ],
@@ -238,6 +252,12 @@ def test_rerank_threshold_may_be_unset_or_a_number(raw_config, write_config):
     assert load_config(write_config(raw_config)).retrieval.rerank_score_threshold == 0.35
 
 
+@pytest.mark.parametrize(("written", "read"), [(True, True), (False, False), ("auto", "auto")])
+def test_ocr_may_be_on_off_or_automatic(raw_config, write_config, written, read):
+    raw_config["parsing"]["ocr"] = written
+    assert load_config(write_config(raw_config)).parsing.ocr == read
+
+
 def test_qdrant_server_instead_of_local_folder(raw_config, write_config):
     """The later move to a Qdrant server is a config change."""
     raw_config["qdrant"]["path"] = None
@@ -250,3 +270,39 @@ def test_qdrant_server_instead_of_local_folder(raw_config, write_config):
 def test_paths_section_accepts_path_objects_in_code(config):
     """Paths are real Path objects, ready to use."""
     assert isinstance(config.paths.docs_dir, Path)
+
+
+# -- where the models are served ---------------------------------------------------------
+
+
+def test_the_vision_model_is_served_with_the_answer_model_unless_told_otherwise(config):
+    assert config.llm.vision_base_url is None
+    assert config.llm.for_vision() is config.llm
+
+
+def test_the_vision_model_can_have_its_own_server_and_its_own_key(temp_config):
+    """Answers from a hosted endpoint, figures still described on this machine."""
+
+    def hosted_answers(raw):
+        raw["llm"].update(
+            base_url="https://models.example.com/v1",
+            allow_remote=True,
+            api_key_env="HOSTED_KEY",
+            vision_base_url="http://localhost:11434/v1",
+        )
+
+    llm = temp_config(hosted_answers).llm
+    vision = llm.for_vision()
+
+    assert (llm.base_url, llm.api_key_env) == ("https://models.example.com/v1", "HOSTED_KEY")
+    assert vision.base_url == "http://localhost:11434/v1"
+    assert vision.api_key_env is None  # the hosted service's key is not sent to another server
+    assert vision.vision_model == llm.vision_model
+
+
+def test_a_vision_key_without_a_vision_address_is_a_mistake(temp_config):
+    def key_only(raw):
+        raw["llm"]["vision_api_key_env"] = "VISION_KEY"
+
+    with pytest.raises(ConfigError, match="vision_base_url"):
+        temp_config(key_only)

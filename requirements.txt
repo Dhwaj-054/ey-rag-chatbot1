@@ -1,5 +1,8 @@
 # Direct dependencies, pinned to exact versions.
 # Resolved on 2026-11-18 for Python 3.14 on Windows (see machine.md).
+# Changed on 2026-11-23: Streamlit taken out; starlette, uvicorn, pypdfium2, pillow and
+# psutil pinned at the versions that were already installed (Streamlit and Docling had
+# brought them in), so nothing new has to be downloaded.
 # requirements-lock.txt holds the complete set, including every transitive dependency.
 #
 # Install:  python -m pip install -r requirements.txt
@@ -13,6 +16,11 @@ torchvision==0.29.2+cpu
 
 # Parsing and OCR
 docling==2.150.1
+# Docling brings these three in. They are pinned here because the project also uses
+# them directly: the text-layer check before parsing, figure crops, the core count.
+pypdfium2==5.15.2
+pillow==13.0.0
+psutil==7.2.2
 
 # Embeddings and reranker (BGE-M3, bge-reranker-v2-m3)
 FlagEmbedding==1.4.2
@@ -29,8 +37,10 @@ httpx==0.28.1
 PyYAML==6.0.3
 pydantic==2.14.3
 
-# Chat UI
-streamlit==1.67.0
+# Chat screen: a small web server on this machine, and a page of plain HTML,
+# CSS and JavaScript (src/docqa/web). Streamlit is no longer used.
+starlette==1.10.0
+uvicorn==0.54.0
 
 # Tests
 pytest==9.2.0

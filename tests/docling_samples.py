@@ -139,6 +139,32 @@ def with_table_of_contents() -> DoclingDocument:
     return doc
 
 
+def with_decorations() -> DoclingDocument:
+    """A page with a banner across the top, a tiny stamp, a real chart, and a captioned strip.
+
+    All four pictures cover enough of the page to pass the page-fraction test. Only
+    their shape and size tell the decorative ones from the real ones.
+    """
+    doc = DoclingDocument(name="decorations")
+    doc.add_page(page_no=1, size=Size(width=PAGE_WIDTH, height=PAGE_HEIGHT))
+
+    def picture(width: int, height: int, top: float, bottom: float, caption: str | None = None) -> None:
+        ref = (
+            doc.add_text(DocItemLabel.CAPTION, caption, prov=prov(1, bottom - 4, bottom - 16)) if caption else None
+        )
+        doc.add_picture(
+            image=ImageRef.from_pil(Image.new("RGB", (width, height), "white"), dpi=144),
+            caption=ref,
+            prov=prov(1, top, bottom),
+        )
+
+    picture(1000, 60, 820, 760)  # a banner: nearly seventeen times as wide as it is high
+    picture(50, 50, 740, 680)  # a stamp-sized picture
+    picture(600, 400, 660, 400)  # a chart
+    picture(1000, 60, 380, 320, caption="Figure 2: Timeline of the scheme")  # elongated, but captioned
+    return doc
+
+
 def with_identifiers(count: int) -> DoclingDocument:
     """A document that quotes ``count`` different PAN-like strings."""
     doc = DoclingDocument(name="identifiers")

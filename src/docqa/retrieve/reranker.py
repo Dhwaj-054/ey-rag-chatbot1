@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from typing import Protocol
 
 from docqa.config import RerankerConfig
+from docqa.quantize import quantize_if_asked
 
 
 class RerankError(Exception):
@@ -64,6 +65,10 @@ class BGEReranker:
                 f"The reranker {config.model!r} could not be loaded. Is it on this machine? "
                 f"({type(exc).__name__}: {_first_line(exc)})"
             ) from exc
+        self.quantized = quantize_if_asked(
+            self._model.model, config.quantize, f"The reranker {config.model}"
+        )
+        """True if the model runs with 8-bit weights (``reranker.quantize``)."""
 
     def score(self, question: str, passages: Sequence[str]) -> list[float]:
         if not passages:

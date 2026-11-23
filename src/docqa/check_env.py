@@ -21,9 +21,10 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from docqa.config import Config, ConfigError, load_config
-from docqa.llm import LLMClient, LLMError, model_is_listed
+from docqa.config import Config, ConfigError, LLMConfig, load_config
+from docqa.llm import LLMClient, LLMError, is_local_url, model_is_listed
 
 MIN_PYTHON = (3, 11)
 
@@ -38,7 +39,11 @@ REQUIRED_PACKAGES = (
     ("httpx", "httpx"),
     ("PyYAML", "yaml"),
     ("pydantic", "pydantic"),
-    ("streamlit", "streamlit"),
+    ("starlette", "starlette"),
+    ("uvicorn", "uvicorn"),
+    ("pypdfium2", "pypdfium2"),
+    ("pillow", "PIL"),
+    ("psutil", "psutil"),
     ("pytest", "pytest"),
 )
 
@@ -87,13 +92,44 @@ def check_packages() -> list[CheckResult]:
 def check_llm(config: Config, client: LLMClient | None = None) -> list[CheckResult]:
     """The LLM server answers, and it has the answer model and the vision model.
 
-    ``client`` is for tests; by default one is built from the configuration.
+    When ``llm.vision_base_url`` names a second server, each server is checked for its
+    own model. ``client`` is for tests; it then stands in for every server.
     """
-    server = f"LLM server reachable ({config.llm.base_url})"
-    wanted = (("answer", config.llm.answer_model), ("vision", config.llm.vision_model))
+    answer = ("answer", config.llm.answer_model)
+    vision = ("vision", config.llm.vision_model)
+    vision_settings = config.llm.for_vision()
+    if vision_settings.base_url.rstrip("/") == config.llm.base_url.rstrip("/"):
+        return _check_llm_server(config.llm, (answer, vision), client)
+    return [
+        *_check_llm_server(config.llm, (answer,), client),
+        *_check_llm_server(vision_settings, (vision,), client),
+    ]
+
+
+def remote_notes(config: Config) -> list[str]:
+    """One sentence for each kind of content that these settings send off this machine."""
+    notes = []
+    if not is_local_url(config.llm.base_url):
+        notes.append(
+            f"the answer model runs on {urlsplit(config.llm.base_url).hostname}, not on this "
+            f"machine. Every question, and the passages found for it, are sent there."
+        )
+    vision_url = config.llm.for_vision().base_url
+    if not is_local_url(vision_url):
+        notes.append(
+            f"the vision model runs on {urlsplit(vision_url).hostname}, not on this machine. "
+            f"During ingestion every figure image is sent there (--no-figures sends none)."
+        )
+    return notes
+
+
+def _check_llm_server(
+    settings: LLMConfig, wanted: Sequence[tuple[str, str]], client: LLMClient | None
+) -> list[CheckResult]:
+    server = f"LLM server reachable ({settings.base_url})"
     try:
         if client is None:
-            with LLMClient(config.llm) as own_client:
+            with LLMClient(settings) as own_client:
                 available = own_client.list_models()
         else:
             available = client.list_models()
@@ -246,6 +282,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         report(check_local_models(config))
         report([check_docling_models(config)])
         report([check_qdrant(config)])
+        for note in remote_notes(config):
+            print(f"\nNote: {note}")
         if config.retrieval.rerank_score_threshold is None:
             print(
                 "\nNote: retrieval.rerank_score_threshold is not set yet. That is expected "

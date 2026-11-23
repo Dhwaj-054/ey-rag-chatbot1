@@ -3,9 +3,12 @@
     pytest -m slow                      all of them (minutes on a CPU)
     pytest -m slow -k embedding         one group
 
-NONE OF THESE HAS BEEN RUN. They were written on a machine that had none of the models.
+NONE OF THESE HAS BEEN RUN ON THE MACHINE THEY WERE WRITTEN ON: it had none of the models.
 Treat a failure here as "the code or this test needs fixing", and find out which. Run
 them one at a time, in the order of this file: each group builds on the one before.
+
+Groups 6 and 7 were added on 2026-11-23 with the speed options and the new chat screen.
+Run with ``-s`` to see the times the 8-bit tests print.
 
 What has to be in place first (HANDOVER.md gives the commands):
 
@@ -21,7 +24,9 @@ measures on real questions.
 
 from __future__ import annotations
 
+import json
 import math
+import time
 
 import pytest
 
@@ -32,7 +37,7 @@ from docqa.index.embedder import BGEM3Embedder
 from docqa.index.store import ChunkStore
 from docqa.ingest import ingest_path
 from docqa.ingest.figures import SYSTEM_PROMPT, build_prompt, parse_reply
-from docqa.ingest.parser import convert_pdf
+from docqa.ingest.parser import convert_pdf, needs_ocr
 from docqa.llm import LLMClient, user_message
 from docqa.retrieve import retrieve
 from docqa.retrieve.reranker import BGEReranker
@@ -61,6 +66,13 @@ def llm(config_for_module: Config):
 
 
 @pytest.fixture(scope="module")
+def vision_llm(config_for_module: Config):
+    """The server the vision model is on: the same one, unless llm.vision_base_url is set."""
+    with LLMClient(config_for_module.llm.for_vision()) as client:
+        yield client
+
+
+@pytest.fixture(scope="module")
 def config_for_module() -> Config:
     from docqa.config import load_config
     from tests.conftest import PROJECT_ROOT
@@ -71,9 +83,9 @@ def config_for_module() -> Config:
 # -- 1. Ollama ------------------------------------------------------------------------
 
 
-def test_ollama_has_both_models(llm, config_for_module):
+def test_ollama_has_both_models(llm, vision_llm, config_for_module):
     assert llm.has_model(config_for_module.llm.answer_model)
-    assert llm.has_model(config_for_module.llm.vision_model)
+    assert vision_llm.has_model(config_for_module.llm.vision_model)
 
 
 def test_answer_model_replies_and_streams(llm):
@@ -109,10 +121,12 @@ def test_ollama_context_window_is_large_enough_for_six_chunks(llm):
     )
 
 
-def test_vision_model_describes_a_flowchart(llm, tmp_path, config_for_module):
+def test_vision_model_describes_a_flowchart(vision_llm, tmp_path, config_for_module):
     image = flowchart_png(tmp_path / "flow.png")
 
-    result = llm.describe_image(build_prompt(), image, system=SYSTEM_PROMPT)
+    result = vision_llm.describe_image(
+        build_prompt(), image, system=SYSTEM_PROMPT, max_tokens=config_for_module.figures.max_tokens
+    )
     description = parse_reply(result.text, "0" * 64, config_for_module.llm.vision_model)
 
     assert description.raw_text is None, f"The reply was not JSON: {result.text[:300]}"
@@ -248,3 +262,115 @@ def test_a_document_goes_from_pdf_to_a_cited_answer(tmp_path, temp_config, llm):
     assert "0.50" in result.text
     assert [(c.doc_title, c.page) for c in result.citations] == [("Schedule of Charges", 1)], result.text
     assert result.unmatched_citations == ()
+
+
+# -- 6. The speed options ---------------------------------------------------------------
+
+
+def test_a_pdf_with_a_text_layer_is_parsed_without_ocr(tmp_path, config_for_module):
+    """parsing.ocr: auto. The check finds the text layer, and Docling runs without its OCR model."""
+    plain = text_pdf(tmp_path / "policy.pdf", ["Schedule of charges", SENTENCE])
+    scan = scanned_pdf(tmp_path / "scan.pdf", ["CIRCULAR ON PREPAYMENT"])
+    assert needs_ocr(plain, config_for_module) is (config_for_module.parsing.ocr is True)
+    assert needs_ocr(scan, config_for_module) is (config_for_module.parsing.ocr is not False)
+
+    document = convert_pdf(plain, config_for_module, ocr=False)
+
+    texts = " ".join(getattr(item, "text", "") for item, _ in document.iterate_items())
+    assert "processing fee on a home loan" in texts
+
+
+def timed(label: str, work):
+    started = time.perf_counter()
+    result = work()
+    print(f"\n    {label}: {time.perf_counter() - started:.1f} s")
+    return result
+
+
+def test_the_8_bit_embedding_model_agrees_with_the_full_one(embedder, config_for_module):
+    """embedding.quantize. Faster on a CPU; the vectors change a little, the ordering must not."""
+    texts = [
+        "What is the penalty for paying a loan off early?",
+        "Prepayment charges: 3 percent of the outstanding principal is levied on foreclosure.",
+        "Branches are open from ten in the morning to five in the evening.",
+    ] * 4
+    small = BGEM3Embedder(config_for_module.embedding.model_copy(update={"quantize": True}))
+    assert small.quantized, "8-bit weights could not be switched on. The log says why."
+
+    full_vectors = timed("full embedding model, 12 texts", lambda: embedder.embed(texts))
+    small_vectors = timed("8-bit embedding model, 12 texts", lambda: small.embed(texts))
+
+    query, related, unrelated = small_vectors[:3]
+    assert cosine(query.dense, related.dense) > cosine(query.dense, unrelated.dense)
+    for full, eight_bit in zip(full_vectors[:3], small_vectors[:3], strict=True):
+        assert cosine(full.dense, eight_bit.dense) > 0.9
+        assert eight_bit.sparse
+
+
+def test_the_8_bit_reranker_still_ranks_the_answering_passage_first(config_for_module):
+    """reranker.quantize. Its scores differ, so the threshold has to be chosen again with it."""
+    passages = [SENTENCE, "Branches close at five in the evening.", "The annual report was published in June."] * 4
+    question = "What is the processing fee on a home loan?"
+    full = BGEReranker(config_for_module.reranker.model_copy(update={"quantize": False}))
+    small = BGEReranker(config_for_module.reranker.model_copy(update={"quantize": True}))
+    assert small.quantized, "8-bit weights could not be switched on. The log says why."
+
+    full_scores = timed("full reranker, 12 passages", lambda: full.score(question, passages))
+    small_scores = timed("8-bit reranker, 12 passages", lambda: small.score(question, passages))
+
+    assert small_scores[0] == max(small_scores)
+    assert full_scores[0] == max(full_scores)
+    if config_for_module.reranker.normalize:
+        assert small_scores[0] > 0.5 > small_scores[1]
+
+
+# -- 7. The chat screen -----------------------------------------------------------------
+
+
+def test_the_chat_screen_answers_a_question_with_the_real_models(tmp_path, temp_config):
+    """Start the web server over one small ingested PDF and ask through its own address."""
+    from starlette.testclient import TestClient
+
+    from docqa import resources
+    from docqa.web.server import create_app
+
+    def change(raw):
+        from tests.conftest import PROJECT_ROOT
+
+        if raw["parsing"]["artifacts_path"]:
+            raw["parsing"]["artifacts_path"] = str(PROJECT_ROOT / raw["parsing"]["artifacts_path"])
+        raw["retrieval"]["rerank_score_threshold"] = 0.2
+        raw["figures"]["describe"] = False
+
+    config = temp_config(change)
+    config.paths.docs_dir.mkdir(parents=True)
+    text_pdf(
+        config.paths.docs_dir / "Schedule of Charges.pdf",
+        ["Schedule of charges for retail loans", SENTENCE, "The fee is collected when the loan is sanctioned."],
+    )
+    report = ingest_path(config.paths.docs_dir, config)
+    assert report.failures == ()
+    resources.release("store")  # the server opens the index itself
+
+    with TestClient(create_app(config, warm_up=False)) as client:
+        documents = client.get("/api/documents").json()["documents"]
+        response = client.post("/api/ask", json={"question": "What is the processing fee on a home loan?"})
+        stats = client.get("/api/stats").json()
+
+    events = []
+    for block in response.text.split("\n\n"):
+        name = next((line[6:].strip() for line in block.splitlines() if line.startswith("event:")), None)
+        data = next((line[5:].strip() for line in block.splitlines() if line.startswith("data:")), None)
+        if name:
+            events.append((name, json.loads(data) if data else None))
+    names = [name for name, _ in events]
+    final = next(data for name, data in events if name == "answer")
+
+    assert [doc["title"] for doc in documents] == ["Schedule of Charges"]
+    assert "error" not in names, events
+    assert names.index("retrieval") < names.index("token") < names.index("answer")
+    assert "0.50" in final["text"]
+    assert [(c["doc_title"], c["page"]) for c in final["citations"]] == [("Schedule of Charges", 1)], final["text"]
+    assert final["timings"]["first_token_s"] > 0 and final["timings"]["retrieval"]["rerank_s"] > 0
+    assert final["timings"]["retrieval"]["search_s"] < 1.0  # the database is not the slow part
+    assert stats["queries"]["answered"] == 1

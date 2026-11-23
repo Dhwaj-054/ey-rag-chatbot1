@@ -13,11 +13,19 @@ requires-python = ">=3.11"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+# The chat screen's page: HTML, CSS and JavaScript.
+"docqa.web" = ["static/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # The project folder is put on the import path so that tests can share tests/fakes.py.
 pythonpath = ["."]
 addopts = "-ra"
+filterwarnings = [
+    # Starlette's test client works with the pinned httpx and says it would prefer httpx2.
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+]
 markers = [
     "slow: needs real models (Ollama or downloaded weights); deselect with -m \"not slow\"",
 ]

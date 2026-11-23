@@ -51,15 +51,18 @@ def test_a_value_already_in_the_environment_is_respected(monkeypatch):
     assert os.environ["HF_HUB_OFFLINE"] == "0"
 
 
-def test_streamlit_serves_this_machine_only_and_sends_no_usage_statistics(project_root):
-    """Seen when the app was first started: without ``server.address`` Streamlit listens
-    on the whole network and, when headless, looks up the public IP address online."""
-    settings = tomllib.loads(
-        (project_root / ".streamlit" / "config.toml").read_text(encoding="utf-8")
-    )
+def test_the_project_installs_its_own_web_server_and_no_longer_streamlit(project_root):
+    """The chat screen is served by Starlette and uvicorn (docqa.web)."""
+    pinned = {
+        line.split("==")[0].strip().lower()
+        for line in (project_root / "requirements.txt").read_text(encoding="utf-8").splitlines()
+        if "==" in line and not line.lstrip().startswith("#")
+    }
 
-    assert settings["server"]["address"] == "localhost"
-    assert settings["browser"]["gatherUsageStats"] is False
+    assert {"starlette", "uvicorn"} <= pinned
+    assert "streamlit" not in pinned
+    project = tomllib.loads((project_root / "pyproject.toml").read_text(encoding="utf-8"))
+    assert project["tool"]["setuptools"]["package-data"]["docqa.web"] == ["static/*"]
 
 
 @pytest.mark.parametrize(

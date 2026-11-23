@@ -180,6 +180,37 @@ class ScoredChunk:
 
 
 @dataclass(frozen=True)
+class RetrievalTimings:
+    """Where the time of one search went, in seconds."""
+
+    embed_s: float = 0.0
+    """Turning the question into vectors."""
+    search_s: float = 0.0
+    """The dense and the sparse search in the vector store, and merging them."""
+    rerank_s: float = 0.0
+    """Scoring the candidates with the reranker. Usually the largest part."""
+    candidates: int = 0
+    """How many passages were reranked."""
+
+
+@dataclass(frozen=True)
+class AnswerTimings:
+    """Where the time of one answer went. Stored with every logged question."""
+
+    retrieval: RetrievalTimings = RetrievalTimings()
+    first_token_s: float | None = None
+    """Seconds from sending the request to the answer model until its first piece of
+    text. On a CPU this is mostly the model reading the evidence. ``None`` when the
+    model was not called or the answer was not streamed."""
+    generation_s: float = 0.0
+    """Seconds the whole call to the answer model took."""
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    evidence_chars: int = 0
+    """Characters of evidence that were sent to the answer model."""
+
+
+@dataclass(frozen=True)
 class RetrievalResult:
     """What retrieval found for one question."""
 
@@ -193,6 +224,7 @@ class RetrievalResult:
     """Best rerank score among the candidates. ``None`` when the search found nothing."""
     elapsed_s: float = 0.0
     """Seconds the search and reranking took. Added to the answer's latency."""
+    timings: RetrievalTimings = RetrievalTimings()
 
 
 @dataclass(frozen=True)
@@ -224,6 +256,10 @@ class Answer:
     notes: tuple[str, ...] = ()
     """Sentences this program added after the model's reply, for example the warning
     that a figure description was used. They are already part of ``text``."""
+    evidence_ids: tuple[str, ...] = ()
+    """``chunk_id`` of every source that was actually given to the answer model. The
+    weaker ones among ``sources`` are left out to keep the answer fast."""
+    timings: AnswerTimings = AnswerTimings()
 
 
 @dataclass(frozen=True)
@@ -242,3 +278,9 @@ class IngestReport:
     a table too long to be embedded whole."""
     figures_described: int = 0
     """Figures the vision model was run on in this run. Cached descriptions do not count."""
+    read_s: float = 0.0
+    """Seconds spent reading files: parsing, or loading the cached parse."""
+    figures_s: float = 0.0
+    """Seconds spent describing figures."""
+    index_s: float = 0.0
+    """Seconds spent chunking, embedding and storing."""

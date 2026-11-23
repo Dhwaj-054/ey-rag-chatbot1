@@ -16,6 +16,24 @@ where one says **Designed**, read "written and tested with stand-ins, not yet ru
 with real models". `HANDOVER.md` holds the current state part by part, and says how
 the points listed as open in section 16 were settled.
 
+**Updated on 2026-11-23.** Release 2026-11-20 has run with the real models on a second
+laptop: it ingested 15 PDFs and answered questions. Release 2026-11-23 then changed
+five things. The sections below still describe most of them in their earlier form:
+
+- Section 10. The chat screen is the project's own web page, served on this machine by
+  Starlette and uvicorn. Streamlit is no longer used.
+- Section 9. The answer model names a passage by a short label, `[E1, p. 12]`, and
+  the code shows the document's title in its place. Of the six passages kept, only
+  those that score at least half as well as the best one are sent to the model.
+- Section 6.6. OCR runs only for a document that has a scanned page.
+- Section 6. Ingestion works in steps over groups of files: read all, describe all
+  figures, then embed and store, so that one large model is in memory at a time.
+- Section 8.4. The threshold is set, to a temporary 0.50.
+
+`HANDOVER.md` describes each change, and holds the measurements of where the time of
+an answer goes. The slow part is the models on the processor. The database search
+takes about 6 ms.
+
 | Part | Status on 2026-11-20 |
 |---|---|
 | Configuration, environment check, data definitions | Built and tested |
@@ -154,7 +172,7 @@ full profile.
 | Numerical engine | PyTorch, CPU build | 2.15.0+cpu | BSD-3-Clause and other permissive licences | Runs Docling's models, BGE-M3 and the reranker |
 | Vector store | Qdrant client, local mode | 1.20.0 | Apache 2.0 | Keeps vectors, chunk text and metadata in a folder, with no server |
 | Metadata and logs | SQLite | part of Python | Public domain | Document register, figure description cache, query log |
-| Chat screen | Streamlit | 1.67.0 | Apache 2.0 | The chat page in the browser |
+| Chat screen | Starlette and uvicorn | 1.10.0 and 0.54.0 | BSD-3-Clause | Serve the project's own chat page (plain HTML, CSS and JavaScript) on this machine. Replaced Streamlit 1.67.0 on 2026-11-23 |
 | Calls to the models | httpx | 0.28.1 | BSD-3-Clause | The HTTP library inside the one module that talks to Ollama |
 | Configuration | PyYAML and pydantic | 6.0.3 and 2.14.3 | MIT | Read and validate `config.yaml` |
 | Tests | pytest | 9.2.0 | MIT | Runs the test suite |
@@ -616,9 +634,9 @@ fixed sentence "I could not find this in the documents." and the answer model is
 called. A model handed weak evidence tends to answer anyway, so the decision is taken
 before the model is involved. It also saves a slow model call.
 
-The threshold is deliberately unset in `config.yaml`. A sensible value depends on real
-documents, and `CLAUDE.md` gives no number. Retrieval is specified to stop with a
-configuration error until it is set. The way to set it is to run the `not_in_docs`
+`CLAUDE.md` gives no number for the threshold, because a sensible value depends on real
+documents. Since 2026-11-23 `config.yaml` holds 0.50, a temporary value set for the
+first 15 documents. Left empty, retrieval stops with a configuration error. The way to set it is to run the `not_in_docs`
 test questions next to answerable ones and choose the value that separates the two
 groups best.
 
@@ -704,16 +722,24 @@ to add that is **open**.
 
 ## 10. Chat screen and query log
 
-**Designed.** A placeholder page is built (`src/docqa/app/main.py`). It shows "No
-documents are indexed yet." and the configured model names.
+**Built** (`src/docqa/web/`), and tested with stand-in models. It has not shown a real
+answer yet. It is a page of plain HTML, CSS and JavaScript that a small server on this
+machine (Starlette and uvicorn) hands to the browser. It loads nothing from the
+internet. Start it with `python -m docqa.web --open`.
 
-The planned screen is a Streamlit chat page:
+The left side lists the ingested documents by a short name, with the full title on
+hover, and shows the figures: documents, pages, passages, questions asked and typical
+times. In the chat:
 
 - The answer appears as it is written, word by word, because a full answer takes
   minutes on a CPU.
 - Citations are shown with the answer.
 - Each source can be expanded. A table is shown as the original HTML table, and a
   figure is shown as the cropped image.
+- The sources appear as soon as the search is done, before the first word of the
+  answer. Each says whether it was given to the answer model.
+- Under each answer is the time every step took: reading the question, the database,
+  ranking, the wait for the first word, and writing.
 
 Every question is logged in SQLite: the time, the question, the identifiers and scores
 of the chunks retrieved, the answer, how long it took, and the names of the models
@@ -766,7 +792,7 @@ This section describes the repository as it was on 2026-11-19. `README.md` and
 | `src/docqa/index/` | `index_chunks`, `remove_document`, `count_chunks` | Signatures and agreed behaviour only |
 | `src/docqa/retrieve/` | `reciprocal_rank_fusion`, `retrieve` | Signatures and agreed behaviour only |
 | `src/docqa/generate/` | `build_messages`, `answer`, `log_query` | Signatures and agreed behaviour only |
-| `src/docqa/app/main.py` | Chat page | Placeholder |
+| `src/docqa/web/` | Chat page | Built on 2026-11-23 (this table is otherwise as on 2026-11-19) |
 | `tests/` | 134 fast tests. None needs Ollama or a model | Passing on 2026-11-19 |
 | `docs/` | Sample documents (input, never modified) | 618 PDFs |
 | `eval/` | Test questions and results | Header row only |
@@ -775,10 +801,10 @@ Commands, run from the project folder with the virtual environment active:
 
 | Command | What it does |
 |---|---|
-| `C:\Users\PX461CK\.venvs\docqa\Scripts\Activate.ps1` | Activates the virtual environment (PowerShell) |
+| `& "$env:USERPROFILE\.venvs\docqa\Scripts\Activate.ps1"` | Activates the virtual environment (PowerShell) |
 | `python -m docqa.check_env` | Environment check. On 2026-11-18: 14 checks passed and 5 failed as expected (no model server, four models missing) |
 | `pytest -m "not slow"` | Fast tests |
-| `streamlit run src/docqa/app/main.py` | Chat page (placeholder) |
+| `python -m docqa.web --open` | Chat page |
 | `python -m docqa.ingest docs/` | Ingestion. Not built yet |
 | `python -m docqa.evaluate` | Evaluation. Not built yet |
 
@@ -848,8 +874,10 @@ Already in place (**Built**):
   proxy settings.
 - Importing the package puts the Hugging Face libraries in offline mode and switches
   their telemetry off, unless those settings were already made.
-- The Streamlit page listens on this machine only, and its usage statistics are off
-  (`.streamlit/config.toml`).
+- The chat page listens on this machine only (`ui.host`; another address is refused
+  unless `ui.allow_network` is set), and it loads nothing from other servers.
+- A model server that is not this machine is refused unless `llm.allow_remote` is
+  set. With it set, `check_env` and the chat page say where questions are sent.
 - Generated data, the PDFs and model files are kept out of git (`.gitignore`).
 
 Part of the design (**Designed**):

@@ -135,6 +135,24 @@ class ChunkStore:
         )
         return int(result.count)
 
+    def count_by_type(self) -> dict[str, int]:
+        """Chunks stored of each kind: ``{"text": n, "table": n, "figure": n}``."""
+        from qdrant_client import models
+
+        counts = {kind.value: 0 for kind in ElementType}
+        if not self._exists():
+            return counts
+        for kind in counts:
+            result = self._client.count(
+                collection_name=self._collection,
+                count_filter=models.Filter(
+                    must=[models.FieldCondition(key="element_type", match=models.MatchValue(value=kind))]
+                ),
+                exact=True,
+            )
+            counts[kind] = int(result.count)
+        return counts
+
     def search_dense(
         self, vector: Sequence[float], access_groups: Sequence[str], limit: int
     ) -> list[tuple[Chunk, float]]:

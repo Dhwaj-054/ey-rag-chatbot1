@@ -1,7 +1,7 @@
 """Ingestion from start to finish: one file, or every PDF in a folder.
 
-    hash -> skip if unchanged -> parse (cached) -> check for personal data
-         -> describe figures (cached) -> chunk -> embed and store -> record
+    hash -> skip if unchanged -> read (parse, cached; check for personal data)
+         -> describe figures (cached) -> chunk, embed and store -> record
 
 A file is skipped when neither its content nor anything that shapes its chunks has
 changed since it was last ingested. "Anything that shapes its chunks" is the
@@ -10,6 +10,19 @@ figure, chunking and embedding settings. So correcting a title in the manifest, 
 changing ``chunking.max_tokens``, re-ingests the documents it affects without anyone
 having to remember to. Parsing and figure descriptions come from their caches in that
 case, which leaves the embedding as the only real work.
+
+**The work is done in three steps, a group of files at a time**
+(``ingestion.group_files``), and not file by file:
+
+    step 1  read every file of the group        (Docling's models in memory)
+    step 2  describe every figure of the group  (the vision model, in Ollama)
+    step 3  chunk, embed and store the group    (the embedding model in memory)
+
+Each step needs a different large model. Taking the steps in turn means only one of
+them is in memory at a time, which matters on a machine with 16 GB: with all three
+loaded at once, Windows starts swapping to disk and everything slows down. After each
+group its documents can be searched, so a long run that is interrupted has not been
+for nothing, and the caches make the next run pick up where it stopped.
 
 One file that fails does not stop the others. Its message goes into the report.
 """
@@ -22,7 +35,7 @@ import logging
 import shutil
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from docqa.config import Config
@@ -31,10 +44,16 @@ from docqa.index import index_chunks, searchable_text
 from docqa.index.embedder import Embedder
 from docqa.index.store import ChunkStore
 from docqa.ingest.chunker import chunk_elements
-from docqa.ingest.documents import Manifest, document_info, file_sha256, source_path_for
-from docqa.ingest.elements import extract_elements
+from docqa.ingest.documents import (
+    Manifest,
+    doc_id_for,
+    document_info,
+    file_sha256,
+    source_path_for,
+)
+from docqa.ingest.elements import Extraction, extract_elements
 from docqa.ingest.figures import PROMPT_VERSION, describe_figure_cached
-from docqa.ingest.parser import cache_paths, load_parsed, parse_settings
+from docqa.ingest.parser import cache_paths, load_parsed, parse_settings, release_converters
 from docqa.ingest.screening import screen_elements
 from docqa.llm import LLMClient
 from docqa.schema import DocumentInfo, ElementType, FigureDescription, IngestReport
@@ -44,7 +63,7 @@ log = logging.getLogger(__name__)
 
 # Raise this when the chunking or indexing logic changes in a way that should make every
 # document be ingested again. It is part of each document's fingerprint.
-PIPELINE_VERSION = "1"
+PIPELINE_VERSION = "2"
 
 DOCUMENT_SUFFIXES = frozenset({".pdf"})
 
@@ -66,6 +85,16 @@ class _Work:
     reason: str
 
 
+@dataclass
+class _Read:
+    """One file after step 1: what was found in it, waiting for steps 2 and 3."""
+
+    item: _Work
+    extraction: Extraction
+    notes: list[str]
+    descriptions: dict[str, FigureDescription] = field(default_factory=dict)
+
+
 def find_documents(path: Path) -> list[Path]:
     """The documents at ``path``: the file itself, or every PDF below the folder.
 
@@ -84,6 +113,7 @@ def find_documents(path: Path) -> list[Path]:
 
 def fingerprint(info: DocumentInfo, config: Config, describe: bool) -> str:
     """A hash of everything, other than the file itself, that shapes a document's chunks."""
+    figures = config.figures
     parts = {
         "pipeline_version": PIPELINE_VERSION,
         "doc_title": info.doc_title,
@@ -94,11 +124,17 @@ def fingerprint(info: DocumentInfo, config: Config, describe: bool) -> str:
         "chunking": config.chunking.model_dump(),
         "figures": {
             "describe": describe,
-            "min_page_fraction": config.figures.min_page_fraction,
+            "min_page_fraction": figures.min_page_fraction,
+            "min_side_px": figures.min_side_px,
+            "max_aspect_ratio": figures.max_aspect_ratio,
             "vision_model": config.llm.vision_model if describe else None,
             "prompt_version": PROMPT_VERSION if describe else None,
         },
-        "embedding": {"model": config.embedding.model, "max_length": config.embedding.max_length},
+        "embedding": {
+            "model": config.embedding.model,
+            "max_length": config.embedding.max_length,
+            "quantize": config.embedding.quantize,
+        },
     }
     return hashlib.sha256(json.dumps(parts, sort_keys=True).encode("utf-8")).hexdigest()
 
@@ -114,6 +150,7 @@ def ingest_path(
     allow_flagged: bool = False,
     describe_figures: bool | None = None,
     prune: bool = False,
+    known_only: bool = False,
     embedder: Embedder | None = None,
     store: ChunkStore | None = None,
     db: Database | None = None,
@@ -138,6 +175,9 @@ def ingest_path(
             looking at the file.
         describe_figures: Overrides ``figures.describe`` for this run.
         prune: Also remove documents whose files are no longer there.
+        known_only: Leave files alone that were never ingested. Only documents already
+            in the index are brought up to date, for example after a change to the
+            pipeline or its settings.
         progress: Called with one line of text as each step finishes.
 
     Raises:
@@ -153,8 +193,11 @@ def ingest_path(
     files = find_documents(path)
 
     work: list[_Work] = []
-    skipped = 0
+    skipped = left_alone = 0
     for file in files:
+        if known_only and db.get_document(doc_id_for(source_path_for(file, config.paths.docs_dir))) is None:
+            left_alone += 1  # not even hashed: a large folder of new files costs nothing
+            continue
         sha256 = file_sha256(file)
         info = document_info(file, config, manifest, sha256)
         mark = fingerprint(info, config, describe)
@@ -186,10 +229,13 @@ def ingest_path(
             f"to process them all."
         )
 
-    say(f"{len(files)} document(s) found, {skipped} unchanged, {len(work)} to ingest.")
+    never = f", {left_alone} never ingested and left alone" if known_only else ""
+    say(f"{len(files)} document(s) found, {skipped} unchanged, {len(work)} to ingest{never}.")
     failures: list[str] = []
     ingested = chunks_indexed = described = 0
+    seconds = {"read": 0.0, "figures": 0.0, "index": 0.0}
     own_llm: LLMClient | None = None
+    loads_own_embedder = embedder is None
 
     def vision() -> LLMClient:
         """The client for the vision model. Created only if a figure needs describing."""
@@ -197,8 +243,14 @@ def ingest_path(
         if llm is not None:
             return llm
         if own_llm is None:
-            own_llm = LLMClient(config.llm)
+            own_llm = LLMClient(config.llm.for_vision())  # ingestion only describes figures
         return own_llm
+
+    def fail(item: _Work, exc: Exception) -> None:
+        log.debug("Ingesting %s failed", item.source_path, exc_info=True)
+        problem = str(exc) if isinstance(exc, FlaggedDocument) else f"{type(exc).__name__}: {exc}"
+        failures.append(f"{item.source_path}: {problem}")
+        say(f"    FAILED {item.source_path}: {problem}")
 
     try:
         if work or prune:
@@ -206,25 +258,61 @@ def ingest_path(
             # program" stops the run at once instead of failing every file in turn.
             store = store or resources.get_store(config)
         if work:
-            embedder = embedder or resources.get_embedder(config)
+            # The tokenizer belongs to the embedding model. Loading it now, which is
+            # quick, shows at the start whether that model is on this machine, and
+            # not after an hour of parsing.
             counter = counter or resources.get_token_counter(config)
 
-        for number, item in enumerate(work, start=1):
-            say(f"[{number}/{len(work)}] {item.source_path} ({item.reason})")
-            try:
-                count, newly_described, notes = _ingest_one(
-                    item, config, describe, allow_flagged, vision, embedder, store, db, counter, say
-                )
-            except Exception as exc:  # noqa: BLE001 - one bad file must not stop the others
-                log.debug("Ingesting %s failed", item.source_path, exc_info=True)
-                problem = str(exc) if isinstance(exc, FlaggedDocument) else f"{type(exc).__name__}: {exc}"
-                failures.append(f"{item.source_path}: {problem}")
-                say(f"    FAILED: {problem}")
+        size = config.ingestion.group_files
+        groups = [work[start : start + size] for start in range(0, len(work), size)]
+        position = 0
+        for number, group in enumerate(groups, start=1):
+            if len(groups) > 1:
+                say(f"Group {number} of {len(groups)}: {len(group)} document(s)")
+
+            # Step 1: read. Only Docling's models are in memory.
+            started = time.perf_counter()
+            read: list[_Read] = []
+            for item in group:
+                position += 1
+                say(f"[{position}/{len(work)}] {item.source_path} ({item.reason})")
+                try:
+                    read.append(_read(item, config, allow_flagged, say))
+                except Exception as exc:  # noqa: BLE001 - one bad file must not stop the others
+                    fail(item, exc)
+            seconds["read"] += time.perf_counter() - started
+            if not read:
                 continue
-            ingested += 1
-            chunks_indexed += count
-            described += newly_described
-            warnings.extend(f"{item.source_path}: {note}" for note in notes)
+            release_converters()
+
+            # Step 2: describe figures. Only the vision model is at work, inside Ollama.
+            if describe:
+                started = time.perf_counter()
+                for entry in list(read):
+                    try:
+                        described += _describe(entry, config, vision, db, say)
+                    except Exception as exc:  # noqa: BLE001
+                        fail(entry.item, exc)
+                        read.remove(entry)
+                seconds["figures"] += time.perf_counter() - started
+            if not read:
+                continue
+
+            # Step 3: chunk, embed and store. Only the embedding model is in memory.
+            started = time.perf_counter()
+            group_embedder = embedder or resources.get_embedder(config)
+            for entry in read:
+                try:
+                    count = _index(entry, config, group_embedder, store, db, counter, say)
+                except Exception as exc:  # noqa: BLE001
+                    fail(entry.item, exc)
+                    continue
+                ingested += 1
+                chunks_indexed += count
+                warnings.extend(f"{entry.item.source_path}: {note}" for note in entry.notes)
+            seconds["index"] += time.perf_counter() - started
+            if loads_own_embedder and number < len(groups):
+                resources.release("embedder")  # makes room for step 1 of the next group
 
         if prune:
             for removed in _prune(config, store, db):
@@ -241,22 +329,14 @@ def ingest_path(
         failures=tuple(failures),
         warnings=tuple(warnings),
         figures_described=described,
+        read_s=seconds["read"],
+        figures_s=seconds["figures"],
+        index_s=seconds["index"],
     )
 
 
-def _ingest_one(
-    item: _Work,
-    config: Config,
-    describe: bool,
-    allow_flagged: bool,
-    vision: Callable[[], LLMClient],
-    embedder: Embedder | None,
-    store: ChunkStore | None,
-    db: Database,
-    counter: TokenCounter | None,
-    say: Callable[[str], None],
-) -> tuple[int, int, list[str]]:
-    """Ingest one file. Returns (chunks indexed, figures newly described, warnings)."""
+def _read(item: _Work, config: Config, allow_flagged: bool, say: Callable[[str], None]) -> _Read:
+    """Step 1 for one file: parse it (or take the cached parse) and check it for personal data."""
     info = item.info
     notes: list[str] = []
 
@@ -280,39 +360,62 @@ def _ingest_one(
                     f"with --allow-flagged."
                 )
             notes.append(f"ingested although the personal-data check flagged it: {found.describe()}.")
+    return _Read(item, extraction, notes)
 
-    descriptions: dict[str, FigureDescription] = {}
+
+def _describe(
+    entry: _Read,
+    config: Config,
+    vision: Callable[[], LLMClient],
+    db: Database,
+    say: Callable[[str], None],
+) -> int:
+    """Step 2 for one file: describe its figures. Returns how many were newly described."""
+    figures = [
+        element
+        for element in entry.extraction.elements
+        if element.element_type is ElementType.FIGURE and element.image_path is not None
+    ]
+    if not figures:
+        return 0
     newly_described = 0
-    if describe:
-        figures = [
-            element
-            for element in extraction.elements
-            if element.element_type is ElementType.FIGURE and element.image_path is not None
-        ]
-        started = time.perf_counter()
-        for position, element in enumerate(figures, start=1):
-            description, cached = describe_figure_cached(element, vision(), config, db)
-            descriptions[element.element_id] = description
-            newly_described += not cached
-            say(
-                f"    figure {position}/{len(figures)} on p. {element.page}: "
-                f"{description.figure_type}{' (cached)' if cached else ''}"
-            )
-        if figures:
-            say(f"    figures: {len(figures)}, {time.perf_counter() - started:.1f} s")
+    started = time.perf_counter()
+    for position, element in enumerate(figures, start=1):
+        figure_started = time.perf_counter()
+        description, cached = describe_figure_cached(element, vision(), config, db)
+        entry.descriptions[element.element_id] = description
+        newly_described += not cached
+        how = "cached" if cached else f"{time.perf_counter() - figure_started:.0f} s"
+        say(
+            f"    figure {position}/{len(figures)} of {entry.item.source_path}, p. {element.page}: "
+            f"{description.figure_type} ({how})"
+        )
+    say(f"    figures of {entry.item.source_path}: {len(figures)}, {time.perf_counter() - started:.1f} s")
+    return newly_described
 
-    chunks = chunk_elements(extraction.elements, info, descriptions, config, counter=counter)
-    if counter is not None:
-        for chunk in chunks:
-            if chunk.element_type is ElementType.TEXT:
-                continue
-            tokens = counter.count(searchable_text(chunk))
-            if tokens > config.embedding.max_length:
-                notes.append(
-                    f"the {chunk.element_type.value} on p. {chunk.page} has about {tokens} tokens. "
-                    f"Only the first {config.embedding.max_length} are used for search "
-                    f"(embedding.max_length). The whole of it is stored and shown."
-                )
+
+def _index(
+    entry: _Read,
+    config: Config,
+    embedder: Embedder,
+    store: ChunkStore | None,
+    db: Database,
+    counter: TokenCounter,
+    say: Callable[[str], None],
+) -> int:
+    """Step 3 for one file: chunk, embed, store and record it. Returns the chunks stored."""
+    item, info, extraction = entry.item, entry.item.info, entry.extraction
+    chunks = chunk_elements(extraction.elements, info, entry.descriptions, config, counter=counter)
+    for chunk in chunks:
+        if chunk.element_type is ElementType.TEXT:
+            continue
+        tokens = counter.count(searchable_text(chunk))
+        if tokens > config.embedding.max_length:
+            entry.notes.append(
+                f"the {chunk.element_type.value} on p. {chunk.page} has about {tokens} tokens. "
+                f"Only the first {config.embedding.max_length} are used for search "
+                f"(embedding.max_length). The whole of it is stored and shown."
+            )
 
     started = time.perf_counter()
     if chunks:
@@ -321,8 +424,8 @@ def _ingest_one(
         stored = 0
         if store is not None:
             store.delete_document(info.doc_id)
-        notes.append("no text, tables or figures were found in it, so nothing was indexed.")
-    say(f"    indexed: {stored} chunk(s), {time.perf_counter() - started:.1f} s")
+        entry.notes.append("no text, tables or figures were found in it, so nothing was indexed.")
+    say(f"    indexed {item.source_path}: {stored} chunk(s), {time.perf_counter() - started:.1f} s")
 
     db.save_document(
         DocumentRecord(
@@ -339,7 +442,7 @@ def _ingest_one(
             ingested_at=utc_now(),
         )
     )
-    return stored, newly_described, notes
+    return stored
 
 
 def _prune(config: Config, store: ChunkStore | None, db: Database) -> list[str]:

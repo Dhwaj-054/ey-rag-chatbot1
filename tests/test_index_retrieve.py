@@ -150,6 +150,11 @@ def test_retrieve_puts_the_chunk_that_answers_the_question_first(tmp_cfg, indexe
     assert result.best_score == result.chunks[0].rerank_score
     assert result.best_score >= TEST_RERANK_THRESHOLD
     assert result.elapsed_s > 0
+    # Where the time went is recorded, so that the slow step can be seen and tuned.
+    timings = result.timings
+    assert timings.candidates == len(indexed["reranker"].calls[0][1]) > 0
+    assert timings.embed_s >= 0 and timings.search_s >= 0 and timings.rerank_s >= 0
+    assert timings.embed_s + timings.search_s + timings.rerank_s <= result.elapsed_s
     rerank_scores = [item.rerank_score for item in result.chunks]
     assert rerank_scores == sorted(rerank_scores, reverse=True)
     assert all(item.fusion_score > 0 for item in result.chunks)

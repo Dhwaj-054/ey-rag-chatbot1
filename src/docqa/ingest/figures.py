@@ -10,6 +10,10 @@ Descriptions are cached in SQLite by the hash of the cropped image, the model na
 CPU, so an unchanged figure is never described twice. Changing the instruction below
 means raising ``PROMPT_VERSION``; every figure is then described again on the next run.
 
+Two settings keep each call short: a large crop is scaled down before the model sees
+it (``figures.max_side_px``), and the length of a description is capped
+(``figures.max_tokens``).
+
 The description is model-generated and can be wrong. It is stored as such
 (``Chunk.model_generated``), and an answer that uses it must say so.
 """
@@ -178,7 +182,12 @@ def describe_figure_cached(
         return cached, True
 
     result = llm.describe_image(
-        build_prompt(element.text), image, mime_type="image/png", system=SYSTEM_PROMPT, model=model
+        build_prompt(element.text),
+        image_for_model(image, config.figures.max_side_px),
+        mime_type="image/png",
+        system=SYSTEM_PROMPT,
+        model=model,
+        max_tokens=config.figures.max_tokens,
     )
     if result.finish_reason == "length":
         log.warning(
@@ -188,6 +197,31 @@ def describe_figure_cached(
     description = parse_reply(result.text, image_sha256, model)
     db.save_figure_description(description, PROMPT_VERSION, result.text, result.latency_s)
     return description, False
+
+
+def image_for_model(image: bytes, max_side_px: int) -> bytes:
+    """The picture as it is sent to the vision model: scaled down if it is large.
+
+    The time a vision model needs grows with the number of pixels it is shown. A crop
+    of a whole page at 144 dpi has four times the pixels the model needs to read the
+    labels of a chart. The picture is scaled so that its longer side is at most
+    ``max_side_px``; a smaller picture is sent as it is. The file on disk, which the
+    chat screen shows, is not touched, and the cache key stays the hash of that file.
+    """
+    import io
+
+    from PIL import Image
+
+    with Image.open(io.BytesIO(image)) as picture:
+        longer = max(picture.size)
+        if longer <= max_side_px:
+            return image
+        scale = max_side_px / longer
+        size = (max(1, round(picture.width * scale)), max(1, round(picture.height * scale)))
+        smaller = picture.convert("RGB").resize(size, Image.Resampling.LANCZOS)
+        out = io.BytesIO()
+        smaller.save(out, format="PNG")
+        return out.getvalue()
 
 
 def _find_json_object(reply: str) -> dict[str, Any] | None:

@@ -16,12 +16,17 @@ Everything below the line is addressed to the assistant.
 This repository is a local question-answering chatbot for banking documents. It parses
 PDFs, indexes them, searches them and writes answers that cite the document and page.
 
-All of the code is written and its 347 fast tests pass. **It has never been run with a
-real model.** It was written on a laptop with no Ollama, no embedding model, no
-reranker and none of Docling's models, so every model was replaced by a small fake in
-the tests. This machine has Ollama with both Qwen models. Your job is to connect the
-code to the real models, find what breaks, fix it, and show that the chatbot answers
-real questions with correct citations.
+All of the code is written and its 460 fast tests pass. It was written on a laptop with
+no Ollama, no embedding model, no reranker and none of Docling's models, so every model
+was replaced by a small fake in the tests. An earlier release (2026-11-20) has since run
+with the real models on one other laptop. **The changes of release 2026-11-23 have
+never been run with a real model:** the chat screen, the shorter prompts, ingestion in
+steps and the speed options. This machine has Ollama with both Qwen models. Your job is
+to connect the code to the real models, find what breaks, fix it, and show that the
+chatbot answers real questions with correct citations.
+
+If this machine already holds a working copy of an earlier release, use
+`COPILOT_UPDATE.md` instead of this file.
 
 Expect real problems. The parts that call a model were written from the libraries'
 signatures, not by running them. `HANDOVER.md`, section "Where it is most likely to
@@ -40,7 +45,8 @@ when something fails.
 ## Rules that matter most
 
 - **The stack is fixed.** Docling, Ollama, `qwen2.5:7b`, `qwen2.5vl:7b`, BGE-M3,
-  `bge-reranker-v2-m3`, Qdrant in local mode, SQLite, Streamlit. Do not swap, add or
+  `bge-reranker-v2-m3`, Qdrant in local mode, SQLite, and the project's own web page
+  for the chat screen (Starlette and uvicorn). Do not swap, add or
   upgrade a component, and do not change a pinned version, without asking the user.
 - **Nothing leaves the machine.** No cloud AI service may be called by the pipeline.
   The only network use is installing the pinned packages and downloading the models
@@ -75,10 +81,12 @@ what you saw.
 
 ### 1. Describe this machine
 
-`machine.md` describes the laptop the code was written on. Rewrite it for this machine:
-hardware, operating system, Python version, Ollama version and the models it lists,
-and anything about the network that matters. Keep the section "Behaviour of installed
-software found during setup": it records traps that still apply.
+`machine.md` describes the machines the project has been on so far, one section each.
+Add a section for this machine: hardware, operating system, Python version, Ollama
+version and the models it lists, and anything about the network that matters. Write
+only what you observed by running a command. Do not remove or rewrite the sections for
+the other machines, and keep the section "Behaviour of installed software found during
+setup": it records traps that still apply.
 
 ### 2. Python environment
 
@@ -104,7 +112,7 @@ other models, once", and record the licences in `machine.md`.
 ### 5. Environment check and fast tests
 
 Run `python -m docqa.check_env` until every line says PASS. Then run
-`pytest -m "not slow"`. All 347 should pass on this machine too. A failure here is most
+`pytest -m "not slow"`. All 460 should pass on this machine too. A failure here is most
 likely a difference between machines, such as a path or a package version: fix that,
 not the test.
 
@@ -165,7 +173,7 @@ instructions to the answer model.
 
 ### 11. Chat screen
 
-Start `streamlit run src/docqa/app/main.py`. Ask three questions: one answered from
+Start `python -m docqa.web --open`. Ask three questions: one answered from
 text, one from a table, and one that should be refused. Check that the answer streams,
 that the citations are listed, that each source opens, that a table is shown as a
 table, and that the question appears in the query log (`data/docqa.sqlite`, table

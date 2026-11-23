@@ -5,6 +5,9 @@
 #
 # Values come from CLAUDE.md unless a comment says "starting value": those are
 # defaults chosen while the code was written and are open to change.
+#
+# Settings marked SPEED trade time against something else. HANDOVER.md, section
+# "Making it faster", says what each one costs.
 
 paths:
   docs_dir: docs                        # sample documents (input, never modified)
@@ -22,10 +25,18 @@ llm:
   # An OpenAI-compatible endpoint. Ollama today. Moving to a vLLM server later means
   # changing base_url (and allow_remote) here, nothing else.
   base_url: http://localhost:11434/v1
-  # Addresses that are not this machine are refused unless this is true.
+  # Addresses that are not this machine are refused unless this is true. With true,
+  # every question and the passages found for it are sent to base_url. HANDOVER.md,
+  # section "Answers from a hosted endpoint", says what that means and how to set it up.
   allow_remote: false
-  # Name of an environment variable that holds an API key. Ollama needs none.
+  # Name of an environment variable that holds an API key. Ollama needs none. The key
+  # itself never goes in this file.
   api_key_env: null
+  # Where the vision model is served, if not at base_url. null: at base_url. Set it to
+  # http://localhost:11434/v1 when base_url is a hosted endpoint, so that figure images
+  # stay on this machine. vision_api_key_env is the key variable for that address.
+  vision_base_url: null
+  vision_api_key_env: null
   answer_model: qwen2.5:7b
   vision_model: qwen2.5vl:7b            # figures and flowcharts, ingestion only
   temperature: 0.0                      # starting value
@@ -36,24 +47,51 @@ llm:
   # its OpenAI-compatible endpoint cannot change that per request. Raise it in Ollama
   # (OLLAMA_CONTEXT_LENGTH=8192 or more) before asking real questions. See HANDOVER.md.
 
+ui:
+  # The chat screen: python -m docqa.web, then open http://127.0.0.1:8000
+  host: 127.0.0.1                       # this machine only
+  port: 8000                            # starting value
+  # false: a host other than this machine is refused, so the screen cannot be opened
+  # from the network by accident.
+  allow_network: false
+  # SPEED. true: the search models and the answer model are loaded when the screen
+  # starts, in the background, so the first question does not wait for them.
+  warm_up: true
+
 parsing:
   # Folder that holds Docling's own models (layout, tables, OCR). Fill it once with
   #   docling-tools models download layout tableformer rapidocr -o models/docling
   # The folder is git-ignored. null: Docling looks in its own cache, and tries to
   # download what is missing, which this project's offline setting stops.
   artifacts_path: models/docling
-  ocr: true                             # read scanned pages and regions with no text layer
+  # SPEED. Reading scanned pages (OCR): true = for every document, false = never,
+  # auto = only for a document that has at least one page without a text layer.
+  # A document that is all digital text is parsed faster without it.
+  ocr: auto
+  # With "auto": a page with this many characters of text or fewer counts as scanned.
+  # Starting value.
+  scanned_page_max_chars: 20
   ocr_languages: []                     # empty: the OCR engine's own default
   images_scale: 2.0                     # starting value: figure crops at 144 dpi (1.0 is 72 dpi)
-  table_mode: accurate                  # accurate or fast (Docling's TableFormer)
-  num_threads: 4                        # starting value: CPU threads Docling may use
+  table_mode: accurate                  # SPEED. accurate or fast (Docling's TableFormer)
+  # SPEED. CPU threads Docling may use. 0: one per physical core of this machine.
+  num_threads: 0
 
 figures:
-  # false: figures are still cropped and saved, but the vision model is not called.
+  # SPEED. false: figures are still cropped and saved, but the vision model is not
+  # called. Describing a figure is the slowest step of ingestion on a CPU.
   describe: true
-  # Pictures that cover less of the page than this are skipped (logos, stamps,
-  # signatures). Starting value.
-  min_page_fraction: 0.02
+  # Pictures without a caption are skipped if they look decorative: logos, stamps,
+  # signatures, rules and banners. Three tests, all starting values. A picture that
+  # has a caption is always kept.
+  min_page_fraction: 0.02               # covers less of its page than this
+  min_side_px: 60                       # its shorter side has fewer pixels than this
+  max_aspect_ratio: 8.0                 # it is this many times longer than it is wide, or more
+  # SPEED. A crop whose longer side has more pixels than this is scaled down before
+  # the vision model sees it. Fewer pixels are read faster; too few and small labels
+  # become unreadable. Starting value.
+  max_side_px: 1280
+  max_tokens: 700                       # SPEED. Longest figure description. Starting value
 
 screening:
   # CLAUDE.md: a file that looks like it holds real customer data stops ingestion.
@@ -66,10 +104,19 @@ ingestion:
   # A run that would process more files than this stops and asks for --yes.
   # Parsing is slow on a CPU. Starting value.
   confirm_above_files: 25
+  # SPEED. Files are taken through the three steps (parse, describe figures, index)
+  # this many at a time, so that only one large model is in memory at once. After
+  # each group its documents can be searched. Starting value.
+  group_files: 20
 
 embedding:
   model: BAAI/bge-m3                    # dense and sparse vectors; a local folder also works
   use_fp16: false                       # must stay false on CPU
+  # SPEED. true: the model's weights are held as 8-bit numbers. Usually about twice as
+  # fast on a CPU with about half the memory; the vectors differ slightly, so every
+  # document is indexed again when this changes. NOT TRIED with the real model yet:
+  # measure before and after (python -m docqa.stats). See src/docqa/quantize.py.
+  quantize: false
   batch_size: 4                         # starting value: keep batches small on CPU
   # Longest input in tokens. The library's own default is 512, which would cut chunks
   # of up to 800 tokens without a warning. Starting value.
@@ -78,6 +125,9 @@ embedding:
 reranker:
   model: BAAI/bge-reranker-v2-m3        # a local folder also works
   use_fp16: false                       # must stay false on CPU
+  # SPEED. As embedding.quantize. Scores shift slightly, so choose the threshold
+  # again after changing it. NOT TRIED with the real model yet.
+  quantize: false
   batch_size: 4                         # starting value
   max_length: 1024                      # starting value: question plus chunk, in tokens
   # true: scores are mapped to 0..1. retrieval.rerank_score_threshold is on this scale.
@@ -97,18 +147,28 @@ chunking:
   overlap_max_tokens: 100
 
 retrieval:
+  # SPEED. Reranking is the slow part of a search: its time grows with this number.
   candidates: 30                        # taken from hybrid search, before reranking
   top_k: 6                              # kept after reranking
   rrf_k: 60                             # starting value: usual reciprocal rank fusion constant
-  # Temporary starting value for the first indexed documents. Recalibrate with
-  # "python -m docqa.evaluate --suggest-threshold" after adding eval questions.
+  # Below this best rerank score the chatbot replies with not_found_message and the
+  # answer model is not called. CLAUDE.md gives no number: a sensible one depends on
+  # the documents. 0.50 is a temporary starting value, set on the laptop that runs the
+  # models for its first 15 documents. Choose it again with
+  # "python -m docqa.evaluate --suggest-threshold" once eval/questions.csv has rows,
+  # and again after switching reranker.quantize. null means not set: retrieval then
+  # stops with a configuration error.
   rerank_score_threshold: 0.50
   default_access_group: all
 
 generation:
   not_found_message: "I could not find this in the documents."
-  # Most evidence text, in characters, sent to the answer model with one question.
-  # Evidence beyond it is cut and marked as cut. 20,000 characters is roughly 5,000 to
-  # 6,500 tokens, which leaves room for the instructions and the reply in an
-  # 8,192-token context window. Starting value.
-  evidence_char_budget: 20000
+  # SPEED. Most evidence text, in characters, sent to the answer model with one
+  # question. Evidence beyond it is cut and marked as cut. On a CPU the model needs
+  # most of its time to read the evidence, so this is the main setting for answer
+  # time. 12,000 characters is about three full passages. Starting value.
+  evidence_char_budget: 12000
+  # SPEED. A retrieved passage is given to the answer model only if its rerank score
+  # is at least this share of the best passage's score. The best passage always is.
+  # 0 gives the model every retrieved passage. Starting value.
+  evidence_score_ratio: 0.5

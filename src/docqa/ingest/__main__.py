@@ -51,6 +51,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--prune", action="store_true", help="also remove documents whose files are gone"
     )
+    parser.add_argument(
+        "--ingested-only",
+        action="store_true",
+        help="bring the documents that were ingested before up to date; leave new files alone",
+    )
     parser.add_argument("--list", action="store_true", help="list the ingested documents and exit")
     parser.add_argument("-v", "--verbose", action="store_true", help="show library messages too")
     args = parser.parse_args(argv)
@@ -82,6 +87,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             allow_flagged=args.allow_flagged,
             describe_figures=False if args.no_figures else None,
             prune=args.prune,
+            known_only=args.ingested_only,
             progress=print,
         )
     except IngestAborted as exc:
@@ -100,6 +106,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"failed {len(report.failures)}. Chunks indexed: {report.chunks_indexed}. "
         f"Figures described by the vision model: {report.figures_described}."
     )
+    if report.files_ingested or report.failures:
+        print(
+            f"Time by step: reading {report.read_s:.0f} s, describing figures "
+            f"{report.figures_s:.0f} s, embedding and storing {report.index_s:.0f} s."
+        )
     for title, lines in (("Warnings", report.warnings), ("Failures", report.failures)):
         if lines:
             print(f"\n{title}:")

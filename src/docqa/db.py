@@ -18,13 +18,14 @@ One file, ``paths.sqlite_path``. Three tables:
 
 Every method opens its own connection and closes it again. That is slower than keeping
 one open, and it does not matter at this scale; in exchange the class is safe to use
-from Streamlit, which runs each page refresh on a different thread.
+from the chat screen's server, which answers each request on a worker thread.
 """
 
 from __future__ import annotations
 
 import json
 import sqlite3
+import statistics
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
@@ -72,9 +73,14 @@ CREATE TABLE IF NOT EXISTS query_log (
     latency_s        REAL NOT NULL,
     answer_model     TEXT,
     embedding_model  TEXT NOT NULL,
-    reranker_model   TEXT NOT NULL
+    reranker_model   TEXT NOT NULL,
+    timings          TEXT
 );
 """
+
+# Columns added after the first version. A database made by an older version of the
+# code gets them added when it is opened, so that its rows are kept.
+_ADDED_COLUMNS = (("query_log", "timings", "TEXT"),)
 
 
 @dataclass(frozen=True)
@@ -115,6 +121,30 @@ class LoggedQuery:
     answer_model: str | None
     embedding_model: str
     reranker_model: str
+    timings: dict[str, Any] | None = None
+    """Where the time went (``AnswerTimings`` as plain data). ``None`` for rows logged
+    before timings were recorded."""
+
+
+@dataclass(frozen=True)
+class QueryStats:
+    """Figures drawn from the query log, for the chat screen's side panel."""
+
+    questions: int = 0
+    answered: int = 0
+    refused: int = 0
+    failed: int = 0
+    median_latency_s: float | None = None
+    """Median seconds from question to finished answer, over answered questions."""
+    median_search_s: float | None = None
+    """Median seconds spent searching and reranking."""
+    median_database_s: float | None = None
+    """Median seconds of that which the vector store took. The rest is the two search models."""
+    median_first_token_s: float | None = None
+    """Median seconds the answer model took before its first word."""
+    median_tokens_per_s: float | None = None
+    """Median writing speed of the answer model, in tokens per second."""
+    last_asked_at: str | None = None
 
 
 def utc_now() -> str:
@@ -130,6 +160,10 @@ class Database:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             connection.executescript(_TABLES)
+            for table, column, kind in _ADDED_COLUMNS:
+                present = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
+                if column not in present:
+                    connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -234,6 +268,7 @@ class Database:
             answer_model=answer.answer_model,
             embedding_model=embedding_model,
             reranker_model=reranker_model,
+            timings=asdict(answer.timings),
         )
 
     def log_failure(
@@ -279,9 +314,50 @@ class Database:
                 answer_model=row["answer_model"],
                 embedding_model=row["embedding_model"],
                 reranker_model=row["reranker_model"],
+                timings=json.loads(row["timings"]) if row["timings"] else None,
             )
             for row in rows
         ]
+
+    def query_stats(self) -> QueryStats:
+        """Counts and typical times over the whole query log."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT asked_at, refused, error, latency_s, timings FROM query_log ORDER BY id"
+            ).fetchall()
+        if not rows:
+            return QueryStats()
+
+        answered = [row for row in rows if not row["error"] and not row["refused"]]
+        search, database, first_token, speed = [], [], [], []
+        for row in rows:
+            timings = json.loads(row["timings"]) if row["timings"] else None
+            if not timings or row["error"]:
+                continue
+            retrieval = timings.get("retrieval") or {}
+            spent = sum(retrieval.get(part) or 0.0 for part in ("embed_s", "search_s", "rerank_s"))
+            if spent:
+                search.append(spent)
+                database.append(retrieval.get("search_s") or 0.0)
+            if row["refused"]:
+                continue
+            if timings.get("first_token_s") is not None:
+                first_token.append(timings["first_token_s"])
+            writing = (timings.get("generation_s") or 0.0) - (timings.get("first_token_s") or 0.0)
+            if timings.get("completion_tokens") and writing > 0:
+                speed.append(timings["completion_tokens"] / writing)
+        return QueryStats(
+            questions=len(rows),
+            answered=len(answered),
+            refused=sum(1 for row in rows if row["refused"] and not row["error"]),
+            failed=sum(1 for row in rows if row["error"]),
+            median_latency_s=_median([row["latency_s"] for row in answered]),
+            median_search_s=_median(search),
+            median_database_s=_median(database),
+            median_first_token_s=_median(first_token),
+            median_tokens_per_s=_median(speed),
+            last_asked_at=rows[-1]["asked_at"],
+        )
 
     def _log(
         self,
@@ -296,12 +372,13 @@ class Database:
         answer_model: str | None,
         embedding_model: str,
         reranker_model: str,
+        timings: dict[str, Any] | None = None,
     ) -> int:
         with self._connect() as connection:
             cursor = connection.execute(
                 "INSERT INTO query_log (asked_at, question, answer, refused, error, retrieved, "
-                "citations, latency_s, answer_model, embedding_model, reranker_model) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "citations, latency_s, answer_model, embedding_model, reranker_model, timings) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     utc_now(),
                     question,
@@ -314,6 +391,7 @@ class Database:
                     answer_model,
                     embedding_model,
                     reranker_model,
+                    json.dumps(timings) if timings is not None else None,
                 ),
             )
             return int(cursor.lastrowid or 0)
@@ -360,6 +438,7 @@ def _document(row: sqlite3.Row) -> DocumentRecord:
 
 
 def _retrieved(answer: Answer) -> list[dict[str, Any]]:
+    given = set(answer.evidence_ids)
     return [
         {
             "chunk_id": source.chunk.chunk_id,
@@ -369,6 +448,11 @@ def _retrieved(answer: Answer) -> list[dict[str, Any]]:
             "element_type": source.chunk.element_type.value,
             "fusion_score": source.fusion_score,
             "rerank_score": source.rerank_score,
+            "given_to_model": source.chunk.chunk_id in given,
         }
         for source in answer.sources
     ]
+
+
+def _median(values: Sequence[float]) -> float | None:
+    return statistics.median(values) if values else None

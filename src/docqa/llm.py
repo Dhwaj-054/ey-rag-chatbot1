@@ -8,6 +8,10 @@ Plain ``httpx`` is used rather than a vendor SDK: there is no built-in cloud add
 fall back to, and an address that is not this machine is refused unless
 ``llm.allow_remote`` is set in the configuration.
 
+The vision model may be served somewhere else than the answer model (vLLM serves one
+model per server). ``LLMClient(config.llm)`` talks to the answer model's server and
+``LLMClient(config.llm.for_vision())`` to the vision model's.
+
 Typical use::
 
     from docqa.config import load_config
@@ -260,9 +264,10 @@ class LLMClient:
         local = is_local_url(base_url)
         if not local and not config.allow_remote:
             raise LLMConfigError(
-                f"llm.base_url ({base_url}) is not on this machine and llm.allow_remote is "
-                f"false. Nothing was sent. Set allow_remote to true only for a server you "
-                f"control."
+                f"The model server address ({base_url}) is not on this machine and "
+                f"llm.allow_remote is false. Nothing was sent. Set allow_remote to true only "
+                f"on purpose: whatever the model is asked (questions with the passages found "
+                f"for them, or figure images) is then sent to that server."
             )
 
         headers: dict[str, str] = {}

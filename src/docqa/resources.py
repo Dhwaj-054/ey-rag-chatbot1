@@ -14,7 +14,9 @@ that the Qdrant folder is free for the next program.
 
 from __future__ import annotations
 
+import gc
 import threading
+import time
 from typing import TYPE_CHECKING, Any
 
 from docqa.config import Config
@@ -29,6 +31,7 @@ if TYPE_CHECKING:
 
 _lock = threading.RLock()
 _cache: dict[tuple[Any, ...], Any] = {}
+_key_locks: dict[tuple[Any, ...], threading.Lock] = {}
 
 
 def get_embedder(config: Config) -> Embedder:
@@ -36,7 +39,7 @@ def get_embedder(config: Config) -> Embedder:
     from docqa.index.embedder import BGEM3Embedder
 
     section = config.embedding
-    key = ("embedder", section.model, section.use_fp16, section.batch_size, section.max_length)
+    key = ("embedder", section.model_dump_json())
     return _get(key, lambda: BGEM3Embedder(section))
 
 
@@ -45,14 +48,7 @@ def get_reranker(config: Config) -> Reranker:
     from docqa.retrieve.reranker import BGEReranker
 
     section = config.reranker
-    key = (
-        "reranker",
-        section.model,
-        section.use_fp16,
-        section.batch_size,
-        section.max_length,
-        section.normalize,
-    )
+    key = ("reranker", section.model_dump_json())
     return _get(key, lambda: BGEReranker(section))
 
 
@@ -89,6 +85,38 @@ def get_llm(config: Config) -> LLMClient:
     return _get(key, lambda: LLMClient(config.llm))
 
 
+def warm_up(config: Config) -> dict[str, float]:
+    """Load everything a question needs, so that the first question does not wait for it.
+
+    Opens the vector store and loads the embedding model and the reranker. Returns the
+    seconds each one took. An error (a model that is not on this machine, a store that
+    another program has open) is passed on to the caller.
+    """
+    seconds: dict[str, float] = {}
+    for name, load in (("store", get_store), ("embedder", get_embedder), ("reranker", get_reranker)):
+        started = time.perf_counter()
+        load(config)
+        seconds[name] = time.perf_counter() - started
+    return seconds
+
+
+def release(kind: str) -> None:
+    """Forget the shared objects of one kind (``"embedder"``, ``"reranker"``, ...).
+
+    Ingestion uses this between its steps, so that a model it no longer needs does not
+    take up memory next to the one it needs now.
+    """
+    with _lock:
+        for key in [key for key in _cache if key[0] == kind]:
+            value = _cache.pop(key)
+            if kind in ("store", "llm"):
+                try:
+                    value.close()
+                except Exception:  # noqa: BLE001 - closing must not hide the real error
+                    pass
+    gc.collect()
+
+
 def close_all() -> None:
     """Release every shared object. Safe to call more than once."""
     with _lock:
@@ -102,7 +130,20 @@ def close_all() -> None:
 
 
 def _get(key: tuple[Any, ...], create: Any) -> Any:
+    """Return the object for ``key``, creating it once.
+
+    Each key has its own lock. Loading a model takes a long time, and it must not make
+    a request for something else (the database, say) wait behind it.
+    """
     with _lock:
-        if key not in _cache:
-            _cache[key] = create()
-        return _cache[key]
+        if key in _cache:
+            return _cache[key]
+        key_lock = _key_locks.setdefault(key, threading.Lock())
+    with key_lock:
+        with _lock:
+            if key in _cache:
+                return _cache[key]
+        value = create()
+        with _lock:
+            _cache[key] = value
+        return value

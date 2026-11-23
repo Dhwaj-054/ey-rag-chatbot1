@@ -1,15 +1,17 @@
-# Complete set of installed packages, exactly as installed and tested on 2026-11-18
-# (Python 3.14.6, Windows 11, CPU only). requirements.txt lists the direct dependencies;
-# this file adds every transitive one.
+# The complete set of packages, every one pinned: what requirements.txt installs,
+# with everything those packages depend on. Python 3.14 on Windows.
 #
-# Generated with:  python -m pip freeze --exclude-editable
-# To reproduce the environment exactly:
-#   python -m pip install -r requirements-lock.txt
-#   python -m pip install --no-deps -e .
+# First written on 2026-11-18 from a fresh install. Rewritten on 2026-11-23 when
+# Streamlit was replaced by the project's own web page: Streamlit and the packages
+# only it needed were taken out of this list. The list was worked out from the
+# installed packages' own requirements, and the fast tests were run with the
+# removed packages blocked. It has not been installed from scratch since.
+#
+# Install:  python -m pip install -r requirements-lock.txt
+#           python -m pip install --no-deps -e .
 
 --extra-index-url https://download.pytorch.org/whl/cpu
 accelerate==1.16.0
-altair==6.3.0
 annotated-doc==0.0.6
 annotated-types==0.8.0
 anyio==4.16.0
@@ -48,7 +50,6 @@ hyperframe==6.1.0
 idna==3.20
 iniconfig==2.3.1
 ir_datasets==0.6.3
-itsdangerous==2.2.0
 Jinja2==3.1.6
 joblib==1.6.0
 jsonref==1.1.0
@@ -85,9 +86,8 @@ psutil==7.2.2
 pyarrow==26.0.1
 pyclipper==1.4.0
 pydantic==2.14.3
-pydantic-settings==2.16.3
 pydantic_core==2.50.4
-pydeck==0.9.3
+pydantic-settings==2.16.3
 Pygments==2.21.0
 pylatexenc==2.11
 pypdfium2==5.15.2
@@ -95,7 +95,6 @@ pytest==9.2.0
 python-dateutil==4.0.0
 python-docx==1.2.0
 python-dotenv==1.2.4
-python-multipart==0.0.34
 python-oxmsg==0.0.2
 python-pptx==1.0.2
 pywin32==312
@@ -120,7 +119,6 @@ shellingham==1.5.4
 six==1.17.0
 soupsieve==4.1.1
 starlette==1.10.0
-streamlit==1.67.0
 sympy==1.14.0
 tabulate==0.10.0
 threadpoolctl==3.8.0
@@ -135,12 +133,11 @@ tree-sitter-javascript==0.25.0
 tree-sitter-python==0.25.0
 tree-sitter-typescript==0.23.2
 typer==0.27.3
-typing-inspection==0.4.5
 typing_extensions==4.16.0
+typing-inspection==0.4.5
 tzdata==2026.6
 urllib3==2.8.0
 uvicorn==0.54.0
-watchdog==7.1.0
 websockets==17.4
 xlsxwriter==3.3.1
 xxhash==4.1.0

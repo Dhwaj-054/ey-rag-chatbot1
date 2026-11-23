@@ -79,8 +79,45 @@ def test_failed_questions_are_logged_too(tmp_path):
     assert logged.answer_model == "qwen2.5:7b"
 
 
+def test_a_database_made_by_the_first_version_is_upgraded_and_keeps_its_rows(tmp_path):
+    """The query log gained a column for timings. Rows logged before that must survive."""
+    path = tmp_path / "docqa.sqlite"
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE query_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, asked_at TEXT NOT NULL, question TEXT NOT NULL,
+                answer TEXT NOT NULL, refused INTEGER NOT NULL, error TEXT, retrieved TEXT NOT NULL,
+                citations TEXT NOT NULL, latency_s REAL NOT NULL, answer_model TEXT,
+                embedding_model TEXT NOT NULL, reranker_model TEXT NOT NULL
+            );
+            INSERT INTO query_log (asked_at, question, answer, refused, error, retrieved, citations,
+                                   latency_s, answer_model, embedding_model, reranker_model)
+            VALUES ('2026-11-21T10:00:00+00:00', 'An old question', 'An old answer', 0, NULL, '[]', '[]',
+                    329.0, 'qwen2.5:7b', 'BAAI/bge-m3', 'BAAI/bge-reranker-v2-m3');
+            """
+        )
+
+    database = Database(path)
+    Database(path)  # opening it a second time changes nothing
+    database.log_failure("A new question", "error", 1.0, "e", "r")
+
+    newest, oldest = database.recent_queries()
+    assert (oldest.question, oldest.answer, oldest.latency_s, oldest.timings) == (
+        "An old question",
+        "An old answer",
+        329.0,
+        None,
+    )
+    assert newest.question == "A new question"
+    stats = database.query_stats()
+    assert (stats.questions, stats.answered, stats.failed) == (2, 1, 1)
+    # The old row has no timings, so it counts towards the total time only.
+    assert stats.median_latency_s == 329.0 and stats.median_search_s is None
+
+
 def test_the_database_can_be_used_from_several_threads(tmp_path):
-    """Streamlit runs each page refresh on another thread."""
+    """The chat screen's server answers each request on another thread."""
     database = Database(tmp_path / "docqa.sqlite")
     errors: list[Exception] = []
 

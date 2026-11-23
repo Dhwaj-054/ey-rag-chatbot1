@@ -132,11 +132,16 @@ class ScriptedLLM:
         self._reply = reply
         self._finish_reason = finish_reason
         self._status = status
+        self._models = [config.llm.answer_model, config.llm.vision_model]
         self.client = LLMClient(config.llm, transport=httpx.MockTransport(self._handle))
 
     def _handle(self, request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/models"):
-            return httpx.Response(200, json={"object": "list", "data": []})
+            if self._status >= 400:
+                raise httpx.ConnectError("connection refused", request=request)
+            return httpx.Response(
+                200, json={"object": "list", "data": [{"id": name} for name in self._models]}
+            )
         body = json.loads(request.content)
         self.requests.append(body)
         if self._status >= 400:

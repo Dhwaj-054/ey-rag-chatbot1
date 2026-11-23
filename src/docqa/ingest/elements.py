@@ -11,7 +11,9 @@ reading order and keeps one ``Element`` per item that carries content:
 
 Left out on purpose: page headers and footers, a caption that already belongs to a
 table or picture (it becomes that table's or picture's title), the table of contents,
-and pictures that are small and have no caption (logos, stamps, signatures).
+and pictures without a caption that look decorative: small ones (logos, stamps,
+signatures) and very elongated ones (rules, banners). Each one left out is a call to
+the vision model saved, and that call is the slowest step of ingestion.
 
 Nothing here runs a model, so it is tested on Docling documents built by hand.
 """
@@ -140,6 +142,9 @@ def extract_elements(doc: DoclingDocument, info: DocumentInfo, config: Config) -
                 without_image += 1
                 if not caption:
                     continue
+            elif not caption and _looks_decorative(image.size, config):
+                small_skipped += 1
+                continue
             else:
                 figures += 1
                 figures_dir.mkdir(parents=True, exist_ok=True)
@@ -205,6 +210,19 @@ def extract_elements(doc: DoclingDocument, info: DocumentInfo, config: Config) -
 
 def _one_line(text: str) -> str:
     return " ".join(text.split())
+
+
+def _looks_decorative(size: tuple[int, int], config: Config) -> bool:
+    """True for a crop that is too small or too elongated to be a chart or a diagram.
+
+    A rule across the page, a banner or a signature strip is many times longer than it
+    is wide. Describing one costs the vision model minutes and gives nothing to search.
+    """
+    width, height = size
+    shorter, longer = min(width, height), max(width, height)
+    if shorter < config.figures.min_side_px:
+        return True
+    return shorter > 0 and longer / shorter >= config.figures.max_aspect_ratio
 
 
 def _list_prefix(item: Any, text: str) -> str:
