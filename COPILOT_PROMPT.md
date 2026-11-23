@@ -16,12 +16,13 @@ Everything below the line is addressed to the assistant.
 This repository is a local question-answering chatbot for banking documents. It parses
 PDFs, indexes them, searches them and writes answers that cite the document and page.
 
-All of the code is written and its 460 fast tests pass. It was written on a laptop with
+All of the code is written and its 574 fast tests pass. It was written on a laptop with
 no Ollama, no embedding model, no reranker and none of Docling's models, so every model
-was replaced by a small fake in the tests. An earlier release (2026-11-20) has since run
-with the real models on one other laptop. **The changes of release 2026-11-23 have
-never been run with a real model:** the chat screen, the shorter prompts, ingestion in
-steps and the speed options. This machine has Ollama with both Qwen models. Your job is
+was replaced by a small fake in the tests. Two earlier releases (2026-11-20 and
+2026-11-23) have since run with the real models on one other laptop. **The changes of
+release 2026-11-23b have never been run with a real model:** the time limit of two
+minutes for an answer, the progress tracker, adding PDFs from the chat screen, and the
+search models run from the project's own loop. This machine has Ollama with both Qwen models. Your job is
 to connect the code to the real models, find what breaks, fix it, and show that the
 chatbot answers real questions with correct citations.
 
@@ -112,7 +113,7 @@ other models, once", and record the licences in `machine.md`.
 ### 5. Environment check and fast tests
 
 Run `python -m docqa.check_env` until every line says PASS. Then run
-`pytest -m "not slow"`. All 460 should pass on this machine too. A failure here is most
+`pytest -m "not slow"`. All 574 should pass on this machine too. A failure here is most
 likely a difference between machines, such as a path or a package version: fix that,
 not the test.
 

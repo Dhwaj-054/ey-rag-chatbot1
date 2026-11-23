@@ -31,9 +31,13 @@
 
       <section class="panel docs" aria-labelledby="docs-title">
         <div class="panel-head">
-          <h2 id="docs-title">Indexed documents</h2>
-          <span class="count" id="doc-count"></span>
+          <h2 id="docs-title">Indexed documents <span class="count" id="doc-count"></span></h2>
+          <button type="button" class="side-button" id="add-docs">+ Add</button>
         </div>
+        <button type="button" class="job-strip" id="job-strip" hidden>
+          <span id="job-strip-text"></span>
+          <span class="strip-track" aria-hidden="true"><span class="strip-fill" id="job-strip-fill"></span></span>
+        </button>
         <input type="search" id="doc-filter" placeholder="Filter by name" aria-label="Filter documents by name" autocomplete="off">
         <ul class="doc-list" id="doc-list"></ul>
         <p class="empty" id="doc-empty" hidden></p>
@@ -60,9 +64,11 @@
           <h1>Ask the documents</h1>
           <p>Type a question below. The answer is written from the indexed documents only, and every statement names the document and page it comes from.</p>
           <ul>
+            <li>A tracker shows each step of the answer as it happens, and the time used.</li>
             <li>The passages that were found appear first, while the answer is being written.</li>
             <li>Open a passage to read it. Tables are shown as tables, figures as pictures.</li>
             <li>If the documents do not hold the answer, the reply says so.</li>
+            <li>More PDFs can be added with <strong>+ Add</strong> in the side panel.</li>
           </ul>
         </div>
       </div>
@@ -74,6 +80,73 @@
       </form>
     </main>
   </div>
+
+  <dialog class="dialog" id="ingest-dialog" aria-labelledby="ingest-title">
+    <div class="dialog-head">
+      <h2 id="ingest-title">Add documents</h2>
+      <button type="button" class="icon-button" id="ingest-close" aria-label="Close">&#10005;</button>
+    </div>
+
+    <div class="dialog-body">
+      <section id="ingest-choose">
+        <p class="dialog-note">
+          Public or sanitised documents only. A file that looks as if it holds personal data
+          (PAN or Aadhaar numbers) is not ingested.
+        </p>
+
+        <div class="drop" id="drop-zone">
+          <div>
+            <strong>Drop PDF files here</strong>
+            <span class="hint">They are copied into this project's uploads folder. Nothing leaves this computer.</span>
+          </div>
+          <button type="button" class="ghost" id="pick-files">Choose files</button>
+          <input type="file" id="file-input" accept=".pdf,application/pdf" multiple hidden>
+        </div>
+        <ul class="upload-list" id="upload-list"></ul>
+
+        <div class="waiting-head">
+          <h3>Waiting to be ingested <span class="count-dark" id="waiting-count"></span></h3>
+          <input type="search" id="waiting-filter" placeholder="Filter by name" aria-label="Filter the waiting files by name" autocomplete="off">
+        </div>
+        <div class="waiting-tools">
+          <button type="button" class="link" id="select-shown">Select all shown</button>
+          <button type="button" class="link" id="select-none">Clear</button>
+          <span class="hint where" id="waiting-folder" tabindex="0">Where are these files?</span>
+        </div>
+        <ul class="waiting-list" id="waiting-list"></ul>
+        <p class="waiting-empty" id="waiting-empty" hidden></p>
+
+        <label class="check">
+          <input type="checkbox" id="describe-figures">
+          <span>Describe figures and flowcharts with the vision model <span class="hint">(the slowest step: a minute or more for each figure)</span></span>
+        </label>
+        <p class="dialog-error" id="ingest-error" role="alert" hidden></p>
+      </section>
+
+      <section id="ingest-progress" hidden>
+        <div class="job-head">
+          <strong id="job-title"></strong>
+          <span class="job-clock" id="job-clock"></span>
+        </div>
+        <div class="bar" id="job-bar"><span class="fill" id="job-fill"></span></div>
+        <p class="job-now" id="job-now" aria-live="polite"></p>
+        <ul class="job-files" id="job-files"></ul>
+        <div id="job-result"></div>
+        <details class="job-log" id="job-log">
+          <summary>What the run printed</summary>
+          <pre id="job-lines"></pre>
+        </details>
+      </section>
+    </div>
+
+    <div class="dialog-foot">
+      <button type="button" class="link" id="refresh-docs">Bring the ingested documents up to date</button>
+      <span class="spacer"></span>
+      <button type="button" class="secondary" id="ingest-stop" hidden>Stop</button>
+      <button type="button" class="primary" id="ingest-again" hidden>Add more</button>
+      <button type="button" class="primary" id="ingest-start" disabled>Ingest</button>
+    </div>
+  </dialog>
 
   <div class="tooltip" id="tooltip" role="tooltip" hidden></div>
   <script src="/static/app.js"></script>

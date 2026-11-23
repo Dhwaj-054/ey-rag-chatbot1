@@ -6,8 +6,10 @@ PATH is a PDF or a folder of PDFs. It defaults to ``paths.docs_dir``. Run with
 ``--help`` for the options. The exit status is 0 when every file was ingested or
 skipped, 1 when at least one failed, and 2 when the run stopped to ask for ``--yes``.
 
-Stop the chat app before running this. Both use the same index, and Qdrant's local
-mode lets only one program open it.
+Stop the chat screen before running this. Both use the same index, and Qdrant's local
+mode lets only one program open it. To add documents while the chat screen is running,
+use "+ Add" in its side panel: that ingestion runs inside the screen's own program
+(``docqa.web.ingestion``).
 """
 
 from __future__ import annotations

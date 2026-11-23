@@ -5,6 +5,10 @@ The classes below define which keys exist and what values are allowed. They carr
 defaults for those settings, so a key missing from the file is an error rather than a
 silent fallback.
 
+Settings that differ on one machine go in ``config.local.yaml`` next to that file. It
+holds only those settings, is laid over ``config.yaml`` when the configuration is
+loaded, and is not in git.
+
 Typical use::
 
     from docqa.config import load_config
@@ -34,6 +38,7 @@ from pydantic import (
 
 CONFIG_ENV_VAR = "DOCQA_CONFIG"
 CONFIG_FILE_NAME = "config.yaml"
+LOCAL_FILE_NAME = "config.local.yaml"
 
 
 class ConfigError(Exception):
@@ -60,6 +65,8 @@ class _Section(BaseModel):
 
 class PathsConfig(_Section):
     docs_dir: ProjectPath
+    uploads_dir: ProjectPath
+    """Where PDFs added through the chat screen are kept."""
     data_dir: ProjectPath
     parsed_dir: ProjectPath
     figures_dir: ProjectPath
@@ -190,6 +197,9 @@ class RetrievalConfig(_Section):
     candidates: int = Field(gt=0)
     top_k: int = Field(gt=0)
     rrf_k: int = Field(gt=0)
+    rerank_time_limit_s: float | None = Field(default=None, gt=0)
+    """Ranking stops after this many seconds and uses the candidates scored by then.
+    ``None``: every candidate is scored."""
     rerank_score_threshold: float | None = None
     default_access_group: NonEmptyStr
 
@@ -204,6 +214,21 @@ class GenerationConfig(_Section):
     not_found_message: NonEmptyStr
     evidence_char_budget: int = Field(gt=0)
     evidence_score_ratio: float = Field(ge=0.0, le=1.0)
+    time_limit_s: float | None = Field(default=None, gt=0)
+    """The longest an answer should take, from the question to its last word.
+    ``None``: no limit. See ``docqa.generate.budget``."""
+    writing_reserve_s: float = Field(ge=0)
+    """Of ``time_limit_s``, the seconds kept for writing the answer."""
+    min_evidence_chars: int = Field(gt=0)
+    """The evidence is never cut below this to fit the time limit."""
+    read_chars_per_s: float = Field(gt=0)
+    """How fast the answer model reads, assumed until this machine has measured it."""
+
+    @model_validator(mode="after")
+    def _reserve_fits_in_the_limit(self) -> GenerationConfig:
+        if self.time_limit_s is not None and self.writing_reserve_s >= self.time_limit_s:
+            raise ValueError("writing_reserve_s must be smaller than time_limit_s")
+        return self
 
 
 class UIConfig(_Section):
@@ -211,6 +236,8 @@ class UIConfig(_Section):
     port: int = Field(gt=0, lt=65536)
     allow_network: bool = False
     warm_up: bool
+    max_upload_mb: int = Field(gt=0)
+    """The largest PDF the chat screen accepts, in megabytes."""
 
     @model_validator(mode="after")
     def _local_unless_allowed(self) -> UIConfig:
@@ -240,6 +267,7 @@ class Config(_Section):
     generation: GenerationConfig
 
     _config_file: Path | None = PrivateAttr(default=None)
+    _local_file: Path | None = PrivateAttr(default=None)
 
     @model_validator(mode="after")
     def _chunks_fit_the_models(self) -> Config:
@@ -260,6 +288,11 @@ class Config(_Section):
     def config_file(self) -> Path | None:
         """The file this configuration was loaded from (``None`` if built in code)."""
         return self._config_file
+
+    @property
+    def local_file(self) -> Path | None:
+        """The ``config.local.yaml`` whose values were laid over the config file, if any."""
+        return self._local_file
 
     @property
     def root_dir(self) -> Path | None:
@@ -301,32 +334,66 @@ def _must_exist(path: Path, origin: str) -> Path:
     return path
 
 
-def load_config(path: str | os.PathLike[str] | None = None) -> Config:
+def load_config(path: str | os.PathLike[str] | None = None, *, use_local: bool = True) -> Config:
     """Read, validate and return the configuration.
 
     Relative paths in the file are resolved against the folder that holds it, so the
     result does not depend on the folder a command is run from.
 
+    A file named ``config.local.yaml`` in the same folder, if there is one, is laid
+    over the config file: it holds only the settings that differ on this machine (the
+    folder the documents are in, say), in the same layout. It is git-ignored, so those
+    settings survive an update of the project and never reach another machine.
+
+    Args:
+        path: The config file. See ``find_config_file`` for what is used without it.
+        use_local: False leaves ``config.local.yaml`` out. The tests that check the
+            project's own settings use that.
+
     Raises:
-        ConfigError: the file is missing, is not valid YAML, has an unknown or missing
+        ConfigError: a file is missing, is not valid YAML, has an unknown or missing
             key, or holds a value that is not allowed. The message names the key.
     """
     config_file = Path(os.path.abspath(find_config_file(path)))
-    try:
-        raw: Any = yaml.safe_load(config_file.read_text(encoding="utf-8"))
-    except OSError as exc:
-        raise ConfigError(f"Cannot read {config_file}: {exc}") from exc
-    except yaml.YAMLError as exc:
-        raise ConfigError(f"{config_file} is not valid YAML: {exc}") from exc
-    if not isinstance(raw, dict):
-        raise ConfigError(f"{config_file} must contain a mapping of sections at the top level.")
+    raw = _read_mapping(config_file)
+    local_file = config_file.parent / LOCAL_FILE_NAME
+    used_local = use_local and local_file.is_file()
+    if used_local:
+        raw = _laid_over(raw, _read_mapping(local_file))
 
     try:
         config = Config.model_validate(raw, context={"base_dir": config_file.parent})
     except ValidationError as exc:
-        raise ConfigError(f"Invalid configuration in {config_file}:\n{_describe(exc)}") from exc
+        source = f"{config_file} (with {LOCAL_FILE_NAME} laid over it)" if used_local else str(config_file)
+        raise ConfigError(f"Invalid configuration in {source}:\n{_describe(exc)}") from exc
     config._config_file = config_file
+    config._local_file = local_file if used_local else None
     return config
+
+
+def _read_mapping(file: Path) -> dict[str, Any]:
+    try:
+        raw: Any = yaml.safe_load(file.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ConfigError(f"Cannot read {file}: {exc}") from exc
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"{file} is not valid YAML: {exc}") from exc
+    if raw is None and file.name == LOCAL_FILE_NAME:
+        return {}  # an empty local file changes nothing
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{file} must contain a mapping of sections at the top level.")
+    return raw
+
+
+def _laid_over(base: dict[str, Any], changes: dict[str, Any]) -> dict[str, Any]:
+    """``base`` with the values of ``changes`` put over it, section by section."""
+    merged = dict(base)
+    for key, value in changes.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _laid_over(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
 
 
 def _describe(exc: ValidationError) -> str:

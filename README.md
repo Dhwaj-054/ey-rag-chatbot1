@@ -17,9 +17,13 @@ The code is complete and its fast tests pass.
 - Release 2026-11-20 was set up on a second laptop that has the models. It ingested 15
   PDFs and answered questions there, slowly: one answer took between five and seven
   minutes.
-- Release 2026-11-23 (this one) is about that: a new chat screen, shorter prompts,
-  faster ingestion, and a record of where the time of each answer goes. **It has not
-  yet been run with the real models.**
+- Release 2026-11-23 brought a new chat screen, shorter prompts, faster ingestion, and
+  a record of where the time of each answer goes. It ran on that laptop the same day.
+  Answers were still too slow.
+- Release 2026-11-23b (this one) gives an answer a time limit of two minutes, shows a
+  progress tracker while an answer is made, and lets PDFs be added from the chat
+  screen. **It has not yet been run with the real models.** Whether an answer really
+  ends within two minutes on that laptop has to be measured there.
 
 `HANDOVER.md` says what was checked and what was not, how to set the project up, how to
 update an existing copy, and what to try to make it faster.
@@ -39,13 +43,15 @@ Ingestion, once per document:
 A question:
 
 1. The question is embedded. A dense and a sparse search each return candidates.
-2. The two lists are merged by reciprocal rank fusion. The best 30 are reranked, and
-   the best 6 are kept.
+2. The two lists are merged by reciprocal rank fusion. The best 15 are reranked, for
+   at most 20 seconds, and the best 4 are kept.
 3. If even the best is weak, the chatbot says it found nothing. The answer model is
    not called.
-4. Otherwise the answer model gets the passages among the 6 that scored well enough,
-   writes the answer from them and cites each statement. The screen shows each
-   citation as `[document title, p. N]`.
+4. Otherwise the answer model gets the passages among the 4 that scored well enough,
+   cut to what it can read in the time that is left of the two minutes. It writes the
+   answer from them and cites each statement. The screen shows each citation as
+   `[document title, p. N]`. When the two minutes are up the writing stops, at the end
+   of a complete statement.
 5. Every citation is checked against the passages the model was given. The question,
    the passages, the answer and the time each step took are logged.
 
@@ -86,7 +92,8 @@ Options of the chat screen: `--port N`, `--no-warm-up` (do not load the models u
 the first question), `--config PATH`.
 
 Only one program can have the index open at a time. Stop the chat screen before
-ingesting or evaluating.
+running the ingest or evaluate command. Documents can also be added from the chat
+screen itself, without stopping it.
 
 ## The chat screen
 
@@ -95,10 +102,19 @@ full title, file, version, date, pages and passages. Above the list are the figu
 documents, pages, passages, questions asked, and the typical time of an answer and of
 each of its parts.
 
-An answer appears word by word. The passages it was written from are listed before the
-first word arrives, each with its page, its score and whether it was given to the model.
-Tables are shown as tables and figures as pictures. Under each answer is the time every
-step took. Stop ends an answer that is taking too long.
+An answer appears word by word. Above it a tracker shows the five steps of an answer
+(question, search, ranking, reading, writing): which one is in hand, how long each
+took, and the time used of the limit. The passages it was written from are listed
+before the first word arrives, each with its page, its score and whether it was given
+to the model. Tables are shown as tables and figures as pictures. Stop ends an answer
+that is taking too long.
+
+**+ Add** in the side panel adds documents. Drop PDF files on the dialog, or choose
+them: they are copied to `data/uploads`. Or tick files in its list, which shows the
+PDFs of the documents folder that were never ingested. Ingest then takes them through
+the same steps as the command line, shows each file and step, and can be stopped. A
+file that looks as if it holds personal data is not ingested. Questions wait while a
+run goes on.
 
 ## Folders
 
@@ -107,12 +123,14 @@ docs/                 sample documents (input; the pipeline never changes them)
 manifest.csv          title, version, effective date and access group per document
 eval/questions.csv    test questions
 eval/results/         one folder per evaluation run
-data/                 generated: parse cache, figure crops, Qdrant index, SQLite file
+data/                 generated: parse cache, figure crops, Qdrant index, SQLite file,
+                      and uploads/ for PDFs added from the chat screen
 models/               Docling's models (downloaded once; not in git)
 src/docqa/            the code: ingest/ index/ retrieve/ generate/ web/, evaluate.py, stats.py
 tests/                fast tests, and tests/test_real_models.py for the real models
 scripts/              helpers; scripts/releases/ lists the files of each release
 config.yaml           every model name, path, size and threshold
+config.local.yaml     optional: the settings that differ on this machine (not in git)
 ```
 
 `data/`, `models/` and the PDFs are kept out of git.
@@ -124,7 +142,7 @@ config.yaml           every model name, path, size and threshold
 | `HANDOVER.md` | Current state, setup, updating an existing copy, making it faster |
 | `CLAUDE.md` | The decisions and rules of the project |
 | `design.md` | The methods, explained in detail |
-| `machine.md` | The machine the code was written on, and traps found in the installed software |
+| `machine.md` | The two laptops in use, what was measured on each, and traps found in the installed software |
 | `AGENTS.md` | Rules for AI coding assistants |
 | `COPILOT_PROMPT.md` | A task for GitHub Copilot: set the build up on a machine that has the models |
 | `COPILOT_UPDATE.md` | A task for GitHub Copilot: bring an existing copy up to this release and measure it |
@@ -136,6 +154,22 @@ config.yaml           every model name, path, size and threshold
 Everything adjustable is in `config.yaml`, with a comment on each setting. A key that
 is misspelt or missing stops the program with a message that names it. Settings marked
 SPEED trade time against something else; `HANDOVER.md` says what each one costs.
+
+A setting that differs on one machine goes in `config.local.yaml`, next to
+`config.yaml`, with only the keys that differ. For example, when the documents are
+kept in a folder outside the project:
+
+```yaml
+paths:
+  docs_dir: "D:/where/the/documents/are"
+```
+
+That file is laid over `config.yaml` when the settings are loaded, and it is not in
+git, so an update of the project leaves it alone.
+
+`generation.time_limit_s` is the longest an answer should take (120). `null` means no
+limit. The limit is kept by giving the answer model less to read, so a shorter limit
+means answers from less evidence.
 
 One setting needs choosing for each set of documents:
 `retrieval.rerank_score_threshold`. It decides when the chatbot says it found nothing.
@@ -153,5 +187,7 @@ file,doc_title,version,effective_date,access_group
 Master Circulars/Example.pdf,Master Circular - Example,2026-27/12,2026-04-01,
 ```
 
-`file` is the path below `docs/`. A document that is not listed gets its file name as
-its title and no date. Changing a row re-indexes that document on the next ingest run.
+`file` is the path below the documents folder. A document that is not listed gets its
+file name as its title and no date. A file added from the chat screen finds its row by
+its file name, if exactly one row has that name. Changing a row re-indexes that
+document on the next ingest run.

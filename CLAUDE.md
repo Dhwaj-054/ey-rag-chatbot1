@@ -45,7 +45,7 @@ models/               Docling's own models, downloaded once (git-ignored)
 src/docqa/            ingest/  index/  retrieve/  generate/  web/  evaluate.py  stats.py
 tests/
 scripts/              helpers (build_manifest.py, compare_with_release.py)
-config.yaml
+config.yaml           config.local.yaml (optional, git-ignored): what differs on one machine
 machine.md  requirements.md  notes/
 README.md  HANDOVER.md  design.md  AGENTS.md  COPILOT_PROMPT.md  COPILOT_UPDATE.md
 ```
@@ -62,7 +62,10 @@ README.md  HANDOVER.md  design.md  AGENTS.md  COPILOT_PROMPT.md  COPILOT_UPDATE.
 
 **Retrieval**
 - Hybrid search: BGE-M3 dense plus sparse, fused with reciprocal rank fusion, filtered by `access_group`.
-- Take 30 candidates, rerank, keep the top 6. These numbers live in `config.yaml`.
+- Take the candidates, rerank, keep the top few. These numbers live in `config.yaml`:
+  15 and 4 since 2026-11-23, set on the laptop that runs the models to shorten answers
+  (30 and 6 before). Ranking stops after `retrieval.rerank_time_limit_s` and uses the
+  candidates scored by then.
 - If the best rerank score is below the configured threshold, reply "I could not find this in the documents." and do not call the answer model.
 
 **Generation**
@@ -71,10 +74,16 @@ README.md  HANDOVER.md  design.md  AGENTS.md  COPILOT_PROMPT.md  COPILOT_UPDATE.
 - Quote numbers exactly, with units and reporting period. Do no arithmetic beyond what the source shows.
 - When an answer relies on a figure description, say so and tell the user to check the page, since the description is model-generated.
 - If two documents conflict, show both with their effective dates rather than picking one.
+- An answer should take at most two minutes (`generation.time_limit_s`), asked for on
+  2026-11-23. The evidence is cut to what the answer model can read in the time left,
+  and the writing stops when the time is up, at the end of a complete statement, with
+  a note that says so.
 
 **UI and logging**
 - Web chat page with streamed output (answers are slow on CPU). Show citations, and let the user expand each source: render tables as HTML and show figure images.
 - A side panel lists the ingested documents by a short name, with the full title on hover, and shows statistics: documents, pages, passages, questions asked, typical times.
+- Every answer shows a progress tracker: the step in hand, the time each step took, and the time used of the limit.
+- More PDFs can be ingested from the page itself ("+ Add"), by upload or from the documents folder. The same personal-data check applies as on the command line.
 - Log every query to SQLite: timestamp, question, retrieved chunk IDs and scores, answer, latency, time per step, model names.
 
 ## Phases
@@ -103,17 +112,18 @@ laptops in use. On the one the code is written on, the venv lives outside OneDri
 `HANDOVER.md` has the setup for a new machine, the steps to update an existing copy,
 and what to try to make answers faster.
 
-State on 2026-11-23: every command below exists. Release 2026-11-20 ran with the real
-models on the second laptop. The changes of 2026-11-23 (chat screen, shorter prompts,
-ingestion in steps) have not been run with real models yet (`HANDOVER.md` says what
-was checked). The fast tests pass: 460.
+State on 2026-11-23: every command below exists. Releases 2026-11-20 and 2026-11-23
+ran with the real models on the second laptop. The changes of release 2026-11-23b (the
+two-minute limit, the progress tracker, adding PDFs from the chat screen, the search
+models run from the project's own loop) have not been run with real models yet
+(`HANDOVER.md` says what was checked). The fast tests pass: 574.
 
 ```
 & "$env:USERPROFILE\.venvs\docqa\Scripts\Activate.ps1"   # activate the venv (PowerShell, on the laptop the code is written on)
 
 python -m docqa.check_env             # PASS/FAIL: Python, packages, Ollama, models, Qdrant
 pytest -m "not slow"                  # fast tests, no model needed
-pytest -m slow                        # tests that need the real models (15)
+pytest -m slow                        # tests that need the real models (21)
 
 python -m docqa.ingest docs --limit 3 # parse, describe, chunk, index: at most 3 new or changed files
 python -m docqa.ingest docs --no-figures   # the same without calling the vision model
@@ -125,7 +135,8 @@ python -m docqa.evaluate --suggest-threshold   # propose retrieval.rerank_score_
 python -m docqa.evaluate --retrieval-only      # judge the search alone, no answer model
 python -m docqa.evaluate              # run the test questions, write eval/results/<time>/
 
-python -m docqa.web --open            # chat UI at http://127.0.0.1:8000. Stop it before ingesting or evaluating
+python -m docqa.web --open            # chat UI at http://127.0.0.1:8000. "+ Add" there ingests PDFs.
+                                      # Stop it before running the ingest or evaluate command
 python -m docqa.stats                 # what is indexed, and the typical time of each step of an answer
 
 python scripts/build_manifest.py --force       # rebuild manifest.csv from RBI_Documents_Index.xlsx

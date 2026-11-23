@@ -34,9 +34,10 @@ import json
 import logging
 import shutil
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from docqa.config import Config
 from docqa.db import Database, DocumentRecord, utc_now
@@ -49,7 +50,9 @@ from docqa.ingest.documents import (
     doc_id_for,
     document_info,
     file_sha256,
+    source_key,
     source_path_for,
+    source_root_for,
 )
 from docqa.ingest.elements import Extraction, extract_elements
 from docqa.ingest.figures import PROMPT_VERSION, describe_figure_cached
@@ -74,6 +77,15 @@ class IngestAborted(Exception):
 
 class FlaggedDocument(Exception):
     """The file looks as if it holds personal data and was not processed."""
+
+
+class _StopRequested(BaseException):
+    """The caller asked the run to end (``should_stop``).
+
+    Not an ``Exception``, on purpose: the run catches ``Exception`` around each file so
+    that one bad file does not stop the others, and a request to stop must pass
+    through that.
+    """
 
 
 @dataclass(frozen=True)
@@ -151,6 +163,10 @@ def ingest_path(
     describe_figures: bool | None = None,
     prune: bool = False,
     known_only: bool = False,
+    only: Collection[str] | None = None,
+    source_root: Path | None = None,
+    should_stop: Callable[[], bool] | None = None,
+    on_event: Callable[[str, dict[str, Any]], None] | None = None,
     embedder: Embedder | None = None,
     store: ChunkStore | None = None,
     db: Database | None = None,
@@ -178,6 +194,16 @@ def ingest_path(
         known_only: Leave files alone that were never ingested. Only documents already
             in the index are brought up to date, for example after a change to the
             pipeline or its settings.
+        only: Take only these files of ``path``, named as the register names them
+            (their place below the source root). The chat screen passes the files
+            that were ticked.
+        source_root: The folder the files are named relative to. Left out, it is
+            worked out from ``path`` (``docqa.ingest.documents.source_root_for``).
+        should_stop: Asked before each file's step. Once it returns True the run ends
+            there: what was finished stays, and the returned report says ``stopped``.
+        on_event: Called with ``(kind, data)`` as the run goes on, for a caller that
+            shows progress: ``plan``, ``file`` (a step of a file begins), ``figure``,
+            ``file_done`` and ``file_failed``.
         progress: Called with one line of text as each step finishes.
 
     Raises:
@@ -187,11 +213,15 @@ def ingest_path(
     from docqa import resources
 
     say = progress or log.info
+    tell = on_event or (lambda kind, data: None)
     describe = config.figures.describe if describe_figures is None else describe_figures
     db = db or resources.get_database(config)
     manifest = Manifest.load(config.paths.manifest)
     files = find_documents(path)
-    source_root = path.resolve() if path.is_dir() else path.parent.resolve()
+    source_root = source_root or source_root_for(path, config.paths.docs_dir)
+    if only is not None:
+        wanted = {source_key(name) for name in only}
+        files = [file for file in files if source_key(source_path_for(file, source_root)) in wanted]
 
     work: list[_Work] = []
     skipped = left_alone = 0
@@ -215,7 +245,7 @@ def ingest_path(
         else:
             skipped += 1
             continue
-        work.append(_Work(file, source_path_for(file, config.paths.docs_dir), info, mark, reason))
+        work.append(_Work(file, source_path, info, mark, reason))
 
     warnings: list[str] = []
     if limit is not None and len(work) > limit:
@@ -233,11 +263,23 @@ def ingest_path(
 
     never = f", {left_alone} never ingested and left alone" if known_only else ""
     say(f"{len(files)} document(s) found, {skipped} unchanged, {len(work)} to ingest{never}.")
+    tell(
+        "plan",
+        {
+            "seen": len(files),
+            "unchanged": skipped,
+            "left_alone": left_alone,
+            "files": [item.source_path for item in work],
+        },
+    )
     failures: list[str] = []
     ingested = chunks_indexed = described = 0
     seconds = {"read": 0.0, "figures": 0.0, "index": 0.0}
     own_llm: LLMClient | None = None
     loads_own_embedder = embedder is None
+    stopped = False
+    total = len(work)
+    places = {item.source_path: place for place, item in enumerate(work, start=1)}
 
     def vision() -> LLMClient:
         """The client for the vision model. Created only if a figure needs describing."""
@@ -253,6 +295,16 @@ def ingest_path(
         problem = str(exc) if isinstance(exc, FlaggedDocument) else f"{type(exc).__name__}: {exc}"
         failures.append(f"{item.source_path}: {problem}")
         say(f"    FAILED {item.source_path}: {problem}")
+        tell("file_failed", {"source_path": item.source_path, "problem": problem})
+
+    def begin(step: str, item: _Work) -> None:
+        """A step of one file is about to start: the moment a stop request takes effect."""
+        if should_stop is not None and should_stop():
+            raise _StopRequested
+        tell(
+            "file",
+            {"step": step, "source_path": item.source_path, "position": places[item.source_path], "of": total},
+        )
 
     try:
         if work or prune:
@@ -267,7 +319,6 @@ def ingest_path(
 
         size = config.ingestion.group_files
         groups = [work[start : start + size] for start in range(0, len(work), size)]
-        position = 0
         for number, group in enumerate(groups, start=1):
             if len(groups) > 1:
                 say(f"Group {number} of {len(groups)}: {len(group)} document(s)")
@@ -275,50 +326,70 @@ def ingest_path(
             # Step 1: read. Only Docling's models are in memory.
             started = time.perf_counter()
             read: list[_Read] = []
-            for item in group:
-                position += 1
-                say(f"[{position}/{len(work)}] {item.source_path} ({item.reason})")
-                try:
-                    read.append(_read(item, config, allow_flagged, say))
-                except Exception as exc:  # noqa: BLE001 - one bad file must not stop the others
-                    fail(item, exc)
-            seconds["read"] += time.perf_counter() - started
+            try:
+                for item in group:
+                    begin("read", item)
+                    say(f"[{places[item.source_path]}/{total}] {item.source_path} ({item.reason})")
+                    try:
+                        read.append(_read(item, config, allow_flagged, say))
+                    except Exception as exc:  # noqa: BLE001 - one bad file must not stop the others
+                        fail(item, exc)
+            finally:
+                seconds["read"] += time.perf_counter() - started
+                release_converters()
             if not read:
                 continue
-            release_converters()
 
             # Step 2: describe figures. Only the vision model is at work, inside Ollama.
             if describe:
                 started = time.perf_counter()
-                for entry in list(read):
-                    try:
-                        described += _describe(entry, config, vision, db, say)
-                    except Exception as exc:  # noqa: BLE001
-                        fail(entry.item, exc)
-                        read.remove(entry)
-                seconds["figures"] += time.perf_counter() - started
+                try:
+                    for entry in list(read):
+                        begin("figures", entry.item)
+                        try:
+                            described += _describe(entry, config, vision, db, say, should_stop, tell)
+                        except Exception as exc:  # noqa: BLE001
+                            fail(entry.item, exc)
+                            read.remove(entry)
+                finally:
+                    seconds["figures"] += time.perf_counter() - started
             if not read:
                 continue
 
             # Step 3: chunk, embed and store. Only the embedding model is in memory.
             started = time.perf_counter()
-            group_embedder = embedder or resources.get_embedder(config)
-            for entry in read:
-                try:
-                    count = _index(entry, config, group_embedder, store, db, counter, say)
-                except Exception as exc:  # noqa: BLE001
-                    fail(entry.item, exc)
-                    continue
-                ingested += 1
-                chunks_indexed += count
-                warnings.extend(f"{entry.item.source_path}: {note}" for note in entry.notes)
-            seconds["index"] += time.perf_counter() - started
+            try:
+                group_embedder = embedder or resources.get_embedder(config)
+                for entry in read:
+                    begin("index", entry.item)
+                    try:
+                        count = _index(entry, config, group_embedder, store, db, counter, say)
+                    except Exception as exc:  # noqa: BLE001
+                        fail(entry.item, exc)
+                        continue
+                    ingested += 1
+                    chunks_indexed += count
+                    warnings.extend(f"{entry.item.source_path}: {note}" for note in entry.notes)
+                    tell(
+                        "file_done",
+                        {
+                            "source_path": entry.item.source_path,
+                            "chunks": count,
+                            "pages": entry.extraction.pages,
+                            "notes": list(entry.notes),
+                        },
+                    )
+            finally:
+                seconds["index"] += time.perf_counter() - started
             if loads_own_embedder and number < len(groups):
                 resources.release("embedder")  # makes room for step 1 of the next group
 
         if prune:
-            for removed in _prune(config, store, db):
+            for removed in _prune(config, store, db, source_root):
                 say(f"Removed {removed}: its file is no longer there.")
+    except _StopRequested:
+        stopped = True
+        say(f"Stopped. {ingested} of {total} document(s) were ingested; the rest were left as they were.")
     finally:
         if own_llm is not None:
             own_llm.close()
@@ -334,6 +405,8 @@ def ingest_path(
         read_s=seconds["read"],
         figures_s=seconds["figures"],
         index_s=seconds["index"],
+        files_to_ingest=total,
+        stopped=stopped,
     )
 
 
@@ -371,6 +444,8 @@ def _describe(
     vision: Callable[[], LLMClient],
     db: Database,
     say: Callable[[str], None],
+    should_stop: Callable[[], bool] | None = None,
+    tell: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> int:
     """Step 2 for one file: describe its figures. Returns how many were newly described."""
     figures = [
@@ -383,6 +458,15 @@ def _describe(
     newly_described = 0
     started = time.perf_counter()
     for position, element in enumerate(figures, start=1):
+        # A figure can take a minute or more, so a request to stop is honoured between
+        # figures. Those already described are in the cache for the next run.
+        if should_stop is not None and should_stop():
+            raise _StopRequested
+        if tell is not None:
+            tell(
+                "figure",
+                {"source_path": entry.item.source_path, "position": position, "of": len(figures), "page": element.page},
+            )
         figure_started = time.perf_counter()
         description, cached = describe_figure_cached(element, vision(), config, db)
         entry.descriptions[element.element_id] = description
@@ -447,14 +531,27 @@ def _index(
     return stored
 
 
-def _prune(config: Config, store: ChunkStore | None, db: Database) -> list[str]:
-    """Remove every registered document whose file no longer exists. Returns their paths."""
+def _prune(
+    config: Config, store: ChunkStore | None, db: Database, source_root: Path | None = None
+) -> list[str]:
+    """Remove every registered document whose file no longer exists. Returns their paths.
+
+    A document's file is looked for under every folder it can have been named
+    relative to: the documents folder, the folder above the uploads folder, and the
+    folder of this run. Only a file that is in none of them counts as gone, so a run
+    over one folder never removes the documents that came from another.
+    """
+    roots = [config.paths.docs_dir, config.paths.uploads_dir.parent]
+    if source_root is not None:
+        roots.append(source_root)
     removed = []
     for record in db.list_documents():
         location = Path(record.source_path)
-        if not location.is_absolute():
-            location = config.paths.docs_dir / location
-        if location.exists():
+        if location.is_absolute():
+            still_there = location.exists()
+        else:
+            still_there = any((root / location).exists() for root in roots)
+        if still_there:
             continue
         if store is not None:
             store.delete_document(record.doc_id)

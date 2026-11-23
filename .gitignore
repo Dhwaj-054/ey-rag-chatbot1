@@ -45,3 +45,6 @@ desktop.ini
 
 # Notes about one particular machine that must not be published (see machine.md)
 machine.local.md
+
+# Settings of one machine, laid over config.yaml when it is loaded (see the top of config.yaml)
+config.local.yaml

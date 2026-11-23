@@ -45,8 +45,15 @@ def test_project_config_holds_the_values_decided_in_claude_md(config):
     # one), and picture crops for the vision model.
     assert config.parsing.ocr == "auto"
     assert config.figures.describe is True
-    # The stack's models run unchanged unless someone switches the 8-bit option on.
-    assert config.embedding.quantize is False and config.reranker.quantize is False
+    # The 8-bit option. Off for the embedding model: switching it means indexing every
+    # document again. On for the reranker since 2026-11-23, to bring an answer under two
+    # minutes: it is the same model, with its weights held as 8-bit numbers.
+    assert config.embedding.quantize is False and config.reranker.quantize is True
+    # The time an answer may take, asked for on 2026-11-23, and what is derived from it.
+    assert config.generation.time_limit_s == 120
+    assert 0 < config.generation.writing_reserve_s < config.generation.time_limit_s
+    assert config.generation.min_evidence_chars <= config.generation.evidence_char_budget
+    assert config.retrieval.rerank_time_limit_s == 20
     # A file that looks like real customer data stops ingestion.
     assert config.screening.enabled is True
     # A temporary value, set on the laptop that runs the models for its first documents.
@@ -306,3 +313,88 @@ def test_a_vision_key_without_a_vision_address_is_a_mistake(temp_config):
 
     with pytest.raises(ConfigError, match="vision_base_url"):
         temp_config(key_only)
+
+
+# -- settings of one machine: config.local.yaml -------------------------------------------------
+
+
+def test_a_local_file_is_laid_over_the_configuration(raw_config, write_config, tmp_path):
+    """What differs on one machine is kept out of the file that is in git."""
+    path = write_config(raw_config)
+    documents = tmp_path / "documents on another drive"
+    (tmp_path / "config.local.yaml").write_text(
+        f"paths:\n  docs_dir: {documents.as_posix()!r}\nretrieval:\n  candidates: 8\n  top_k: 3\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(path)
+    plain = load_config(path, use_local=False)
+
+    assert config.paths.docs_dir == documents
+    assert (config.retrieval.candidates, config.retrieval.top_k) == (8, 3)
+    # Everything the local file does not name keeps its value, in the same section too.
+    assert config.retrieval.rrf_k == raw_config["retrieval"]["rrf_k"]
+    assert config.paths.uploads_dir == tmp_path / "data" / "uploads"
+    assert config.llm.answer_model == "qwen2.5:7b"
+    assert config.local_file == tmp_path / "config.local.yaml"
+    assert plain.paths.docs_dir == tmp_path / "docs" and plain.local_file is None
+
+
+def test_without_a_local_file_nothing_changes_and_an_empty_one_is_fine(raw_config, write_config, tmp_path):
+    path = write_config(raw_config)
+    assert load_config(path).local_file is None
+
+    (tmp_path / "config.local.yaml").write_text("# nothing differs on this machine yet\n", encoding="utf-8")
+    config = load_config(path)
+
+    assert config.local_file is not None and config.retrieval.candidates == raw_config["retrieval"]["candidates"]
+
+
+def test_a_mistake_in_the_local_file_is_reported_as_one(raw_config, write_config, tmp_path):
+    path = write_config(raw_config)
+    local = tmp_path / "config.local.yaml"
+
+    local.write_text("retrieval:\n  candidats: 8\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match=r"config\.local\.yaml laid over it.*\n.*retrieval\.candidats"):
+        load_config(path)
+
+    local.write_text("- not\n- a mapping\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match=r"config\.local\.yaml must contain a mapping"):
+        load_config(path)
+
+    local.write_text("retrieval: [unclosed\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="is not valid YAML"):
+        load_config(path)
+
+
+def test_the_projects_own_settings_are_tested_without_a_local_file(project_root, config):
+    """A config.local.yaml on the machine that runs the tests must not change what they check."""
+    assert config.local_file is None
+    assert "config.local.yaml" in (project_root / ".gitignore").read_text(encoding="utf-8")
+
+
+# -- the time an answer may take -----------------------------------------------------------------
+
+
+def test_the_time_limit_can_be_switched_off_and_its_parts_must_fit(temp_config):
+    def no_limit(raw):
+        raw["generation"]["time_limit_s"] = None
+        raw["retrieval"]["rerank_time_limit_s"] = None
+
+    config = temp_config(no_limit)
+    assert config.generation.time_limit_s is None and config.retrieval.rerank_time_limit_s is None
+
+    def reserve_longer_than_the_limit(raw):
+        raw["generation"]["time_limit_s"] = 30
+        raw["generation"]["writing_reserve_s"] = 30
+
+    with pytest.raises(ConfigError, match="writing_reserve_s must be smaller than time_limit_s"):
+        temp_config(reserve_longer_than_the_limit)
+
+    for section, key in (("generation", "time_limit_s"), ("retrieval", "rerank_time_limit_s"), ("ui", "max_upload_mb")):
+
+        def not_positive(raw, section=section, key=key):
+            raw[section][key] = 0
+
+        with pytest.raises(ConfigError, match=rf"{section}\.{key}"):
+            temp_config(not_positive)

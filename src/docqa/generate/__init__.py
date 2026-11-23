@@ -4,12 +4,15 @@
                         -> answer model -> check and write out the citations)
                     -> Answer -> query log
 
-Four things are decided here in code and not left to the model:
+Five things are decided here in code and not left to the model:
 
 - When retrieval found nothing good enough, the reply is the fixed not-found sentence
   and the model is not called at all.
 - Which of the retrieved passages the model is given. The weak ones are left out,
   because on a CPU the model's reading time is most of the wait.
+- How long the answer may take (``generation.time_limit_s``): how much evidence fits
+  in the time, and when the writing has to stop. ``docqa.generate.budget`` does the
+  sums.
 - Every citation in the reply is matched against the passages the model was given and
   written out as ``[document title, p. N]``. A citation that matches nothing is
   reported as such.
@@ -23,8 +26,10 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Sequence
+from typing import Any
 
 from docqa.config import Config
+from docqa.generate.budget import AnswerPlan, complete_part, plan_answer
 from docqa.generate.citations import rewrite_citations
 from docqa.generate.prompt import (
     Evidence,
@@ -36,25 +41,38 @@ from docqa.generate.prompt import (
 from docqa.llm import LLMClient, Message, system_message, user_message
 from docqa.schema import Answer, AnswerTimings, Citation, RetrievalResult, ScoredChunk
 
+Progress = Callable[[str, str, dict[str, Any]], None]
+"""``on_step(step, state, details)``. Steps: ``reading`` (the model reads the evidence;
+it ends with the model's first word) and ``writing``. States: ``start`` and ``end``."""
+
 
 def choose_evidence(
-    chunks: Sequence[ScoredChunk], config: Config
+    chunks: Sequence[ScoredChunk], config: Config, char_budget: int | None = None
 ) -> tuple[tuple[ScoredChunk, ...], Evidence]:
     """The passages the answer model will be given, and the evidence text built from them.
 
     Passages scoring far below the best one are dropped
-    (``generation.evidence_score_ratio``), then the rest is cut to
-    ``generation.evidence_char_budget``. What is left is always the first few of
-    ``chunks``, so passage number N is evidence ``E<N>``.
+    (``generation.evidence_score_ratio``), then the rest is cut to a number of
+    characters. Without ``char_budget`` that is ``generation.evidence_char_budget``
+    characters of passage text. With it (what ``plan_answer`` allows an answer that
+    has a time limit) it is that many characters of evidence in all, the passages'
+    headers included, because the plan is about everything the model has to read.
+    What is left is always the first few of ``chunks``, so passage number N is
+    evidence ``E<N>``.
     """
     selected = select_evidence(
         chunks, config.generation.evidence_score_ratio, config.reranker.normalize
     )
-    evidence = format_evidence(selected, config.generation.evidence_char_budget)
+    if char_budget is None:
+        evidence = format_evidence(selected, config.generation.evidence_char_budget)
+    else:
+        evidence = format_evidence(selected, char_budget, count_headers=True)
     return selected[: evidence.included], evidence
 
 
-def build_messages(question: str, chunks: Sequence[ScoredChunk], config: Config) -> list[Message]:
+def build_messages(
+    question: str, chunks: Sequence[ScoredChunk], config: Config, char_budget: int | None = None
+) -> list[Message]:
     """Build the conversation that is sent to the answer model.
 
     The instructions tell the model to:
@@ -71,7 +89,7 @@ def build_messages(question: str, chunks: Sequence[ScoredChunk], config: Config)
 
     Only the passages chosen by ``choose_evidence`` are included.
     """
-    _given, evidence = choose_evidence(chunks, config)
+    _given, evidence = choose_evidence(chunks, config, char_budget)
     return [
         system_message(system_prompt(config.generation.not_found_message)),
         user_message(user_prompt(question, evidence)),
@@ -84,6 +102,9 @@ def answer(
     llm: LLMClient,
     config: Config,
     on_text: Callable[[str], None] | None = None,
+    *,
+    plan: AnswerPlan | None = None,
+    on_step: Progress | None = None,
 ) -> Answer:
     """Write the answer to a question from what retrieval found.
 
@@ -101,11 +122,23 @@ def answer(
             has them written out. If ``on_text`` raises, the request to the model is
             dropped and the exception is passed on: that is how a caller stops an
             answer that is no longer wanted.
+        plan: How much evidence the answer may be given and when its time is up
+            (``docqa.generate.budget.plan_answer``). Left out, one is made here from
+            the time the search took and the reading speed assumed in the
+            configuration. A caller that has the measured speed, or that needs to
+            know the evidence before the model is called, makes the plan itself.
+        on_step: Told when the model starts reading, when its first word arrives and
+            when it has finished writing (see ``Progress``).
+
+    The reply is always read from the model piece by piece, with or without
+    ``on_text``: that is how the wait for the first word is measured, and how the
+    writing can be stopped when the time is up.
 
     The returned ``latency_s`` covers retrieval and generation together.
     """
     started = time.perf_counter()
     not_found = config.generation.not_found_message
+    tell = on_step or (lambda step, state, details: None)
 
     if not retrieval.found or not retrieval.chunks:
         if on_text is not None:
@@ -121,25 +154,44 @@ def answer(
             timings=AnswerTimings(retrieval=retrieval.timings),
         )
 
-    given, evidence = choose_evidence(retrieval.chunks, config)
+    if plan is None:
+        plan = plan_answer(config, used_s=retrieval.elapsed_s, now=started)
+    given, evidence = choose_evidence(retrieval.chunks, config, plan.evidence_budget)
     messages = [
         system_message(system_prompt(not_found)),
         user_message(user_prompt(question, evidence)),
     ]
+    tell(
+        "reading",
+        "start",
+        {
+            "passages": len(given),
+            "chars": len(evidence.text),
+            "expected_s": plan.expected_read_s(len(evidence.text)),
+        },
+    )
     first_token_s: float | None = None
-    if on_text is None:
-        result = llm.chat(messages)
-    else:
-        sent = time.perf_counter()
-        stream = llm.chat_stream(messages)
-        try:
-            for piece in stream:
-                if first_token_s is None:
-                    first_token_s = time.perf_counter() - sent
+    stop_at: float | None = None
+    stopped = False
+    sent = time.perf_counter()
+    stream = llm.chat_stream(messages)
+    try:
+        for piece in stream:
+            now = time.perf_counter()
+            if first_token_s is None:
+                first_token_s = now - sent
+                stop_at = plan.stop_writing_at(now)
+                tell("reading", "end", {"took_s": first_token_s})
+                tell("writing", "start", {})
+            if on_text is not None:
                 on_text(piece)
-        finally:
-            stream.close()  # frees the connection, also when on_text stopped the answer
-        result = stream.result
+            if stop_at is not None and now >= stop_at:
+                stopped = True
+                break
+    finally:
+        stream.close()  # frees the connection, also when the answer was stopped
+    result = stream.so_far() if stopped else stream.result
+    tell("writing", "end", {"took_s": result.latency_s - (first_token_s or 0.0), "stopped": stopped})
 
     timings = AnswerTimings(
         retrieval=retrieval.timings,
@@ -148,11 +200,14 @@ def answer(
         prompt_tokens=result.prompt_tokens,
         completion_tokens=result.completion_tokens,
         evidence_chars=len(evidence.text),
+        time_limit_s=plan.time_limit_s,
+        stopped_at_limit=stopped,
     )
     evidence_ids = tuple(source.chunk.chunk_id for source in given)
-    text, citations, unmatched = rewrite_citations(result.text.strip(), given)
+    written = complete_part(result.text) if stopped else result.text.strip()
+    text, citations, unmatched = rewrite_citations(written, given)
 
-    if _is_refusal(text, not_found, citations):
+    if not stopped and _is_refusal(text, not_found, citations):
         return Answer(
             question=question,
             text=not_found,
@@ -165,7 +220,7 @@ def answer(
             timings=timings,
         )
 
-    notes = _notes(result.finish_reason, citations, unmatched, given, evidence.cut)
+    notes = _notes(result.finish_reason, citations, unmatched, given, evidence, plan, stopped)
     if notes:
         addition = _notes_suffix(notes)
         text += addition
@@ -203,6 +258,18 @@ def log_query(answer: Answer, config: Config) -> None:
     resources.get_database(config).log_answer(answer, config.embedding.model, config.reranker.model)
 
 
+def measured_read_speed(config: Config) -> float | None:
+    """The answer model's reading speed on this machine, from the query log.
+
+    Characters of evidence per second of waiting for the first word, as a median over
+    the latest answers by the configured answer model. ``None`` until there is one.
+    ``plan_answer`` is given this.
+    """
+    from docqa import resources
+
+    return resources.get_database(config).read_speed(config.llm.answer_model)
+
+
 def _notes_suffix(notes: Sequence[str]) -> str:
     return "\n\n" + "\n".join(f"Note: {note}" for note in notes)
 
@@ -223,12 +290,20 @@ def _notes(
     citations: Sequence[Citation],
     unmatched: Sequence[str],
     given: Sequence[ScoredChunk],
-    evidence_cut: bool,
+    evidence: Evidence,
+    plan: AnswerPlan,
+    stopped: bool,
 ) -> list[str]:
     """What the reader has to be told about the answer, beyond what the model wrote."""
     notes: list[str] = []
     by_id = {source.chunk.chunk_id: source.chunk for source in given}
 
+    if stopped:
+        notes.append(
+            f"The answer was stopped because the time limit for an answer "
+            f"({plan.time_limit_s:g} s, generation.time_limit_s) had run out. It may be "
+            f"incomplete. The passages below hold the rest."
+        )
     figure_pages = list(
         dict.fromkeys(
             f"[{citation.doc_title}, p. {citation.page}]"
@@ -259,9 +334,25 @@ def _notes(
             )
     if finish_reason == "length":
         notes.append("The answer was cut off because it reached the length limit (llm.max_tokens).")
-    if evidence_cut:
-        notes.append(
+    if evidence.cut:
+        notes.append(_evidence_note(evidence, plan))
+    return notes
+
+
+def _evidence_note(evidence: Evidence, plan: AnswerPlan) -> str:
+    """Says that the model did not see everything that was found, and why."""
+    if not plan.shortened:
+        return (
             "Some of the retrieved passages were too long to give to the model in full "
             "(generation.evidence_char_budget)."
         )
-    return notes
+    seen = (
+        "only part of the best passage"
+        if evidence.included == 1 and evidence.partial
+        else f"{evidence.included} of the {evidence.offered} passages worth reading"
+        + (", the last of them cut short" if evidence.partial else "")
+    )
+    return (
+        f"To keep within the time limit for an answer ({plan.time_limit_s:g} s, "
+        f"generation.time_limit_s), the model was given {seen}."
+    )

@@ -11,9 +11,11 @@ and page for every answer. It is a proof of concept on one machine. Success mean
 accurate, cited answers on the questions in `eval/questions.csv`.
 
 Current state: all code is written and unit-tested with fakes in place of the models.
-Release 2026-11-20 ran with the real models on a second laptop. The changes of
-2026-11-23 (new chat screen, shorter prompts, ingestion in steps) have not.
-`HANDOVER.md` says exactly what was checked, and what to try to make answers faster.
+Releases 2026-11-20 and 2026-11-23 ran with the real models on a second laptop. The
+changes of release 2026-11-23b have not: a time limit of two minutes for an answer, a
+progress tracker on the answer, adding PDFs from the chat screen, and the search
+models run from the project's own loop. `HANDOVER.md` says exactly what was checked,
+and what to try to make answers faster.
 
 ## Hard rules
 
@@ -34,6 +36,8 @@ Release 2026-11-20 ran with the real models on a second laptop. The changes of
    real customer data, stop and tell the user.
 5. **No hard-coded paths, model names or thresholds.** They go in `config.yaml`, and
    `src/docqa/config.py` must know every key: an unknown or missing key is an error.
+   A setting that differs on one machine goes in `config.local.yaml`, which is not in
+   git. Do not put a machine's own paths into `config.yaml`.
 6. **All model calls go through `src/docqa/llm.py`.** It talks to an OpenAI-compatible
    endpoint, so that moving to a GPU server later is a configuration change.
 7. **Fast tests need no model.** Mock the model client. Mark tests that need real
@@ -53,6 +57,9 @@ Release 2026-11-20 ran with the real models on a second laptop. The changes of
 - If two documents conflict, show both with their effective dates.
 - If the best rerank score is below the configured threshold, reply "I could not find
   this in the documents." and do not call the answer model.
+- An answer has a time limit (`generation.time_limit_s`). The evidence is cut to what
+  the model can read in the time left, and the writing stops when the time is up, at
+  the end of a complete statement, with a note that says so.
 
 ## Where things are
 
@@ -65,10 +72,13 @@ src/docqa/resources.py    models and the vector store, loaded once and shared
 src/docqa/ingest/         hash -> parse (Docling) -> describe figures -> chunk
 src/docqa/index/          embed (BGE-M3) and store (Qdrant)
 src/docqa/retrieve/       hybrid search, rank fusion, rerank, refusal
-src/docqa/generate/       prompt, answer, citation checking, query log
-src/docqa/web/            chat screen: server.py (Starlette) and static/ (the page)
+src/docqa/generate/       prompt, answer, citation checking, query log;
+                          budget.py fits an answer into the time limit
+src/docqa/web/            chat screen: server.py (Starlette), static/ (the page) and
+                          ingestion.py (adding documents from the screen)
 src/docqa/stats.py        what is indexed, and how long questions take
-src/docqa/quantize.py     the optional 8-bit weights for the two search models
+src/docqa/quantize.py     the 8-bit weights for the two search models
+src/docqa/batching.py     how the two search models are run in batches
 src/docqa/evaluate.py     runs eval/questions.csv
 src/docqa/check_env.py    PASS/FAIL check of the machine
 tests/                    fast tests, plus tests/test_real_models.py (slow)
@@ -91,7 +101,8 @@ python -m docqa.stats                      what is indexed, and typical times pe
 ```
 
 Only one program can have the index open at a time. Stop the chat screen before
-ingesting or evaluating.
+running the ingest or evaluate command. Documents can also be added from the chat
+screen itself ("+ Add"), which ingests inside the screen's own program.
 
 ## Working style
 
@@ -105,7 +116,11 @@ ingesting or evaluating.
   (`src/docqa/ingest/parser.py`) or `PIPELINE_VERSION` (`src/docqa/ingest/pipeline.py`),
   so that documents are ingested again.
 - Measure before and after a change that is meant to save time. The chat screen shows
-  the time of every step under each answer, and `python -m docqa.stats` the medians.
+  the time of every step in the tracker on each answer, and `python -m docqa.stats`
+  the medians.
+- The two search models are run from this project's own loop, not through the
+  FlagEmbedding library's calls (`src/docqa/retrieve/reranker.py` says why). The fast
+  tests compare the two on a small model; keep them passing if you touch either.
 - The chat page loads nothing from the internet: no fonts, scripts or images from
   other servers. A test checks this.
 - Never drop and re-create the Qdrant collection to empty it. On Windows the old data

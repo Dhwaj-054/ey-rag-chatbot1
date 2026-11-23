@@ -158,6 +158,11 @@ def describe(index: IndexStats, queries: QueryStats) -> list[str]:
     speed = (
         "no data yet" if queries.median_tokens_per_s is None else f"{queries.median_tokens_per_s:.1f} tokens per second"
     )
+    reading = (
+        "no data yet"
+        if queries.median_read_chars_per_s is None
+        else f"{queries.median_read_chars_per_s:.0f} characters per second"
+    )
     return [
         "Index",
         f"  documents:           {index.documents}",
@@ -170,8 +175,11 @@ def describe(index: IndexStats, queries: QueryStats) -> list[str]:
         f"  median total time:   {seconds(queries.median_latency_s)}",
         f"  median search time:  {seconds(queries.median_search_s)}",
         f"  of which database:   {seconds(queries.median_database_s)}",
+        f"  of which ranking:    {seconds(queries.median_rerank_s)}",
         f"  median wait for the first word: {seconds(queries.median_first_token_s)}",
+        f"  median reading speed: {reading}",
         f"  median writing speed: {speed}",
+        f"  stopped at the time limit: {queries.stopped_at_limit}",
         f"  last asked:          {queries.last_asked_at or 'never'}",
     ]
 

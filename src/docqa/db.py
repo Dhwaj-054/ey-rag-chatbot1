@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import statistics
+import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
@@ -81,6 +82,11 @@ CREATE TABLE IF NOT EXISTS query_log (
 # Columns added after the first version. A database made by an older version of the
 # code gets them added when it is opened, so that its rows are kept.
 _ADDED_COLUMNS = (("query_log", "timings", "TEXT"),)
+
+# The reading speed of the answer model is taken from this many of its latest answers,
+# and the figure is kept for this long before the log is read again.
+_SPEED_SAMPLE = 20
+_SPEED_KEPT_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -144,6 +150,13 @@ class QueryStats:
     """Median seconds the answer model took before its first word."""
     median_tokens_per_s: float | None = None
     """Median writing speed of the answer model, in tokens per second."""
+    median_rerank_s: float | None = None
+    """Median seconds the reranker took."""
+    median_read_chars_per_s: float | None = None
+    """Median reading speed of the answer model: characters of evidence per second of
+    waiting for its first word. The time limit for an answer is planned with it."""
+    stopped_at_limit: int = 0
+    """Answers whose writing was stopped because the time limit had run out."""
     last_asked_at: str | None = None
 
 
@@ -158,6 +171,7 @@ class Database:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._read_speeds: dict[tuple[str, int], tuple[float, float | None]] = {}
         with self._connect() as connection:
             connection.executescript(_TABLES)
             for table, column, kind in _ADDED_COLUMNS:
@@ -214,6 +228,14 @@ class Database:
         with self._connect() as connection:
             cursor = connection.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))
             return cursor.rowcount > 0
+
+    def find_document_by_hash(self, sha256: str) -> DocumentRecord | None:
+        """The registered document whose file has this content, if there is one."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM documents WHERE sha256 = ? ORDER BY source_path LIMIT 1", (sha256,)
+            ).fetchone()
+        return _document(row) if row else None
 
     # -- figure description cache -----------------------------------------------------
 
@@ -329,7 +351,8 @@ class Database:
             return QueryStats()
 
         answered = [row for row in rows if not row["error"] and not row["refused"]]
-        search, database, first_token, speed = [], [], [], []
+        search, database, rerank, first_token, speed, reading = [], [], [], [], [], []
+        stopped = 0
         for row in rows:
             timings = json.loads(row["timings"]) if row["timings"] else None
             if not timings or row["error"]:
@@ -339,6 +362,7 @@ class Database:
             if spent:
                 search.append(spent)
                 database.append(retrieval.get("search_s") or 0.0)
+                rerank.append(retrieval.get("rerank_s") or 0.0)
             if row["refused"]:
                 continue
             if timings.get("first_token_s") is not None:
@@ -346,6 +370,10 @@ class Database:
             writing = (timings.get("generation_s") or 0.0) - (timings.get("first_token_s") or 0.0)
             if timings.get("completion_tokens") and writing > 0:
                 speed.append(timings["completion_tokens"] / writing)
+            read = _read_speed(timings)
+            if read is not None:
+                reading.append(read)
+            stopped += bool(timings.get("stopped_at_limit"))
         return QueryStats(
             questions=len(rows),
             answered=len(answered),
@@ -356,8 +384,42 @@ class Database:
             median_database_s=_median(database),
             median_first_token_s=_median(first_token),
             median_tokens_per_s=_median(speed),
+            median_rerank_s=_median(rerank),
+            median_read_chars_per_s=_median(reading),
+            stopped_at_limit=stopped,
             last_asked_at=rows[-1]["asked_at"],
         )
+
+    def read_speed(self, answer_model: str, sample: int = _SPEED_SAMPLE) -> float | None:
+        """How fast ``answer_model`` reads on this machine, in characters per second.
+
+        The median, over its latest ``sample`` answers, of the characters of evidence
+        it was given divided by the seconds it took to write its first word.
+        ``None`` if it has not answered anything yet. The result is kept for a few
+        seconds, since every question asks for it.
+        """
+        wanted = (_model_key(answer_model), sample)
+        kept = self._read_speeds.get(wanted)
+        if kept is not None and time.monotonic() - kept[0] < _SPEED_KEPT_SECONDS:
+            return kept[1]
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT answer_model, timings FROM query_log WHERE error IS NULL AND refused = 0 "
+                "AND timings IS NOT NULL AND answer_model IS NOT NULL ORDER BY id DESC LIMIT ?",
+                (sample * 5,),
+            ).fetchall()
+        speeds = []
+        for row in rows:
+            if _model_key(row["answer_model"]) != wanted[0]:
+                continue
+            read = _read_speed(json.loads(row["timings"]))
+            if read is not None:
+                speeds.append(read)
+            if len(speeds) == sample:
+                break
+        found = _median(speeds)
+        self._read_speeds[wanted] = (time.monotonic(), found)
+        return found
 
     def _log(
         self,
@@ -394,6 +456,7 @@ class Database:
                     json.dumps(timings) if timings is not None else None,
                 ),
             )
+            self._read_speeds.clear()  # the next question plans with this answer counted in
             return int(cursor.lastrowid or 0)
 
 
@@ -456,3 +519,24 @@ def _retrieved(answer: Answer) -> list[dict[str, Any]]:
 
 def _median(values: Sequence[float]) -> float | None:
     return statistics.median(values) if values else None
+
+
+def _read_speed(timings: dict[str, Any]) -> float | None:
+    """Characters of evidence per second of waiting for the first word, for one answer.
+
+    The evidence is counted with the headers of its passages: the model reads those
+    too. Its instructions and the question are not counted. They cost a little time
+    with every answer, and so make the speed come out a little lower than the model
+    really reads, which errs on the side of an answer that is ready in time.
+    """
+    waited = timings.get("first_token_s")
+    chars = timings.get("evidence_chars")
+    if not waited or waited <= 0 or not chars:
+        return None
+    return chars / waited
+
+
+def _model_key(name: str) -> str:
+    """A model name as two of them are compared: Ollama reads ``name`` as ``name:latest``."""
+    name = name.strip().lower()
+    return name if ":" in name else f"{name}:latest"

@@ -240,3 +240,168 @@ def test_rank_candidates_works_without_a_threshold_and_rejects_an_empty_question
 
     assert ranked[0].chunk.chunk_id == "kyc:00000"
     assert ranked[0].rerank_score == 1.0
+
+
+# -- progress, and a limit on the time ranking may take ---------------------------------------
+
+
+class SlowReranker(FakeReranker):
+    """Takes "a second" for every passage, on a clock that the test's time module reads."""
+
+    def __init__(self, clock) -> None:
+        super().__init__()
+        self.clock = clock
+
+    def score(self, question, passages):
+        self.clock.now += len(passages)
+        return super().score(question, passages)
+
+
+class Clock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def perf_counter(self) -> float:
+        return self.now
+
+
+class BatchingReranker(FakeReranker):
+    """Forms its own batches, as the real reranker does: the last passage alone, then the rest."""
+
+    def score_batches(self, question, passages):
+        scores = self.score(question, passages)
+        last = len(passages) - 1
+        yield [(last, scores[last])]
+        yield [(position, scores[position]) for position in range(last)]
+
+
+def test_every_step_of_a_search_is_reported_as_it_happens(tmp_cfg, indexed):
+    seen: list[tuple[str, str, dict]] = []
+
+    result = retrieve(
+        "What is the processing fee on a home loan?",
+        tmp_cfg,
+        **indexed,
+        progress=lambda step, state, details: seen.append((step, state, details)),
+    )
+
+    assert [(step, state) for step, state, _ in seen] == [
+        ("question", "start"),
+        ("question", "end"),
+        ("database", "start"),
+        ("database", "end"),
+        ("ranking", "start"),
+        ("ranking", "progress"),
+        ("ranking", "end"),
+    ]
+    found = result.timings.candidates
+    assert seen[3][2]["candidates"] == found and seen[4][2] == {"of": found}
+    assert seen[5][2] == {"done": found, "of": found}
+    assert seen[6][2]["done"] == found and seen[6][2]["took_s"] == result.timings.rerank_s
+    assert result.timings.candidates_found == found  # nothing was left out
+
+
+def test_candidates_are_scored_a_batch_at_a_time(temp_config, store):
+    def batches_of_two(raw):
+        raw["reranker"]["batch_size"] = 2
+
+    config = temp_config(batches_of_two)
+    index_chunks(CORPUS, config, embedder=FakeEmbedder(), store=store)
+    reranker = FakeReranker()
+    progress: list[int] = []
+
+    retrieve(
+        "What is the processing fee on a home loan?",
+        config,
+        embedder=FakeEmbedder(),
+        store=store,
+        reranker=reranker,
+        progress=lambda step, state, details: progress.append(details["done"]) if state == "progress" else None,
+    )
+
+    assert [len(passages) for _, passages in reranker.calls] == [2, 2]  # four candidates the user may read
+    assert progress == [2, 4]
+
+
+def test_ranking_stops_at_its_time_limit_and_keeps_what_it_has_scored(temp_config, store, monkeypatch):
+    def a_short_limit(raw):
+        raw["reranker"]["batch_size"] = 1
+        raw["retrieval"]["rerank_time_limit_s"] = 2.5
+
+    config = temp_config(a_short_limit)
+    index_chunks(CORPUS, config, embedder=FakeEmbedder(), store=store)
+    clock = Clock()
+    monkeypatch.setattr("docqa.retrieve.time", clock)
+    reranker = SlowReranker(clock)
+    ends: list[dict] = []
+
+    result = retrieve(
+        "What is the processing fee on a home loan?",
+        config,
+        embedder=FakeEmbedder(),
+        store=store,
+        reranker=reranker,
+        progress=lambda step, state, details: ends.append(details) if (step, state) == ("ranking", "end") else None,
+    )
+
+    # A second each: after the third passage 2.5 s have passed, and the fourth is not read.
+    assert len(reranker.calls) == 3
+    assert (result.timings.candidates, result.timings.candidates_found) == (3, 4)
+    assert ends == [{"took_s": 3.0, "done": 3, "of": 4}]
+    assert len(result.chunks) == 3 and all(item.rerank_score is not None for item in result.chunks)
+    # The passages hybrid search placed highest were the ones that were read.
+    assert result.chunks[0].chunk.chunk_id == "fees:00000" and result.found is True
+
+
+def test_at_least_one_batch_is_scored_however_short_the_limit(temp_config, store, monkeypatch):
+    def almost_no_time(raw):
+        raw["reranker"]["batch_size"] = 2
+        raw["retrieval"]["rerank_time_limit_s"] = 0.001
+
+    config = temp_config(almost_no_time)
+    index_chunks(CORPUS, config, embedder=FakeEmbedder(), store=store)
+    clock = Clock()
+    monkeypatch.setattr("docqa.retrieve.time", clock)
+
+    result = retrieve(
+        "What is the processing fee on a home loan?", config, embedder=FakeEmbedder(), store=store, reranker=SlowReranker(clock)
+    )
+
+    assert result.timings.candidates == 2 and len(result.chunks) == 2
+
+
+def test_without_a_limit_every_candidate_is_scored(temp_config, store, monkeypatch):
+    def no_limit(raw):
+        raw["reranker"]["batch_size"] = 1
+        raw["retrieval"]["rerank_time_limit_s"] = None
+
+    config = temp_config(no_limit)
+    index_chunks(CORPUS, config, embedder=FakeEmbedder(), store=store)
+    clock = Clock()
+    monkeypatch.setattr("docqa.retrieve.time", clock)
+
+    result = retrieve(
+        "What is the processing fee on a home loan?", config, embedder=FakeEmbedder(), store=store, reranker=SlowReranker(clock)
+    )
+
+    assert result.timings.candidates == result.timings.candidates_found == 4
+
+
+def test_a_reranker_that_forms_its_own_batches_is_asked_for_them(tmp_cfg, indexed):
+    """The real reranker groups passages by length. Its scores must land on the right passages."""
+    plain = retrieve("What is the processing fee on a home loan?", tmp_cfg, **indexed)
+    progress: list[int] = []
+
+    batched = retrieve(
+        "What is the processing fee on a home loan?",
+        tmp_cfg,
+        embedder=indexed["embedder"],
+        store=indexed["store"],
+        reranker=BatchingReranker(),
+        progress=lambda step, state, details: progress.append(details["done"]) if state == "progress" else None,
+    )
+
+    assert [(item.chunk.chunk_id, item.rerank_score) for item in batched.chunks] == [
+        (item.chunk.chunk_id, item.rerank_score) for item in plain.chunks
+    ]
+    assert progress == [1, batched.timings.candidates]

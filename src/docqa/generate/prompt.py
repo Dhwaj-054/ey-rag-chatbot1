@@ -31,7 +31,7 @@ from dataclasses import dataclass
 
 from docqa.schema import Chunk, ElementType, ScoredChunk
 
-PROMPT_VERSION = "2"
+PROMPT_VERSION = "3"
 
 SYSTEM_PROMPT = """\
 You answer questions about a bank's documents. You are given numbered EVIDENCE taken \
@@ -58,8 +58,8 @@ your answer that it comes from a description of a figure, and that the reader sh
 check the figure on that page.
 6. If two documents say different things, do not choose between them. Give both, each \
 with its effective date and its own reference.
-7. Keep the answer short: a few sentences, or a short list. Do not repeat the \
-question. Do not add advice or opinions."""
+7. Keep the answer short: at most four sentences, or a short list. Do not repeat the \
+question. Do not add an introduction, advice or opinions."""
 
 CUT_MARKER = "[the rest of this passage was too long to include]"
 
@@ -73,6 +73,10 @@ class Evidence:
     """How many of the chunks it was built from are in ``text``, counted from the best."""
     cut: bool
     """True if a passage was shortened or left out to stay within the character budget."""
+    offered: int = 0
+    """How many chunks it was built from."""
+    partial: bool = False
+    """True if the last passage in ``text`` was shortened."""
 
 
 def system_prompt(not_found_message: str) -> str:
@@ -148,19 +152,30 @@ def evidence_header(number: int, chunk: Chunk) -> str:
     return "\n".join(lines)
 
 
-def format_evidence(chunks: Sequence[ScoredChunk], char_budget: int) -> Evidence:
+def format_evidence(
+    chunks: Sequence[ScoredChunk], char_budget: int, count_headers: bool = False
+) -> Evidence:
     """Lay out passages as numbered evidence, best first.
 
-    ``char_budget`` limits the total length of the passages (their headers do not
-    count). A passage that does not fit in what is left is cut at the end of a line
-    and marked as cut. Passages after that are left out. The best passage is never
-    left out, however long it is: it is cut to the budget.
+    ``char_budget`` limits the total length of the passages. A passage that does not
+    fit in what is left is cut at the end of a line and marked as cut. Passages after
+    that are left out. The best passage is never left out, however long it is: it is
+    cut to the budget.
+
+    The headers of the passages do not count towards the budget, unless
+    ``count_headers`` is set. An answer that has a time limit sets it: the model reads
+    the headers too, and four short passages have as much header as text.
     """
     blocks: list[str] = []
     remaining = char_budget
-    cut = False
+    cut = partial = False
     for number, scored in enumerate(chunks, start=1):
+        header = evidence_header(number, scored.chunk)
         content = text_with_page_marks(scored.chunk)
+        if count_headers:
+            remaining -= len(header) + (3 if blocks else 1)  # its line break, and the blank line before it
+            if not blocks:
+                remaining = max(remaining, min(200, char_budget))
         if len(content) > remaining:
             cut = True
             if remaining < min(200, char_budget) and blocks:
@@ -171,13 +186,20 @@ def format_evidence(chunks: Sequence[ScoredChunk], char_budget: int) -> Evidence
                 shortened = shortened[:line_end]
             content = f"{shortened.rstrip()}\n{CUT_MARKER}"
             remaining = 0
+            partial = True
         else:
             remaining -= len(content)
-        blocks.append(f"{evidence_header(number, scored.chunk)}\n{content}")
+        blocks.append(f"{header}\n{content}")
         if remaining <= 0 and number < len(chunks):
             cut = True
             break
-    return Evidence(text="\n\n".join(blocks), included=len(blocks), cut=cut)
+    return Evidence(
+        text="\n\n".join(blocks),
+        included=len(blocks),
+        cut=cut,
+        offered=len(chunks),
+        partial=partial,
+    )
 
 
 def user_prompt(question: str, evidence: Evidence) -> str:

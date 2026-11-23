@@ -585,3 +585,155 @@ def test_command_line_reports_failures_and_asks_before_a_large_run(bench, monkey
 
     assert main(["--config", str(bench.config.config_file.parent / "missing.yaml")]) == 1
     assert "not found" in capsys.readouterr().out
+
+
+# -- where a document's name comes from --------------------------------------------------------
+
+
+def test_a_part_of_the_documents_folder_gives_each_document_the_name_it_always_had(bench, conversions):
+    """Ingesting a sub-folder, or one file, must not make a second document of a known one."""
+    file = bench.add("Circulars/2026/a.pdf", b"a")
+    bench.run(describe_figures=False)
+    first = bench.db.get_document(doc_id_for("Circulars/2026/a.pdf"))
+    assert first.source_path == "Circulars/2026/a.pdf"
+
+    folder = bench.run(path=bench.config.paths.docs_dir / "Circulars", describe_figures=False)
+    single = bench.run(path=file, describe_figures=False)
+
+    assert (folder.files_seen, folder.files_skipped, folder.files_ingested) == (1, 1, 0)
+    assert (single.files_seen, single.files_skipped, single.files_ingested) == (1, 1, 0)
+    assert [record.source_path for record in bench.db.list_documents()] == ["Circulars/2026/a.pdf"]
+    assert conversions == ["a.pdf"]
+
+
+def test_a_new_document_from_a_folder_elsewhere_is_registered_by_its_place_in_that_folder(bench, tmp_path):
+    external = tmp_path / "documents on another drive"
+    (external / "Circulars").mkdir(parents=True)
+    (external / "Circulars" / "b.pdf").write_bytes(b"b")
+
+    bench.run(path=external, describe_figures=False)
+
+    record = bench.db.get_document(doc_id_for("Circulars/b.pdf"))
+    assert record is not None and record.source_path == "Circulars/b.pdf"  # not its full path
+
+
+def test_the_folder_a_file_is_named_below_can_be_given(bench, tmp_path):
+    """Uploads are named below the folder above the uploads folder: uploads/<file>."""
+    uploads = bench.config.paths.uploads_dir
+    uploads.mkdir(parents=True)
+    (uploads / "a.pdf").write_bytes(b"uploaded")
+    bench.add("a.pdf", b"in the documents folder")
+
+    bench.run(path=uploads, source_root=uploads.parent, describe_figures=False)
+    bench.run(describe_figures=False)
+
+    assert sorted(record.source_path for record in bench.db.list_documents()) == ["a.pdf", "uploads/a.pdf"]
+    assert bench.db.get_document(doc_id_for("uploads/a.pdf")).doc_title == "a"
+
+
+def test_only_the_chosen_files_of_a_folder_are_ingested(bench, conversions):
+    for name in ("a.pdf", "Circulars/b.pdf", "c.pdf"):
+        bench.add(name, name.encode())
+
+    report = bench.run(only=["circulars\\B.pdf", "c.pdf"], describe_figures=False)
+
+    assert (report.files_seen, report.files_to_ingest, report.files_ingested) == (2, 2, 2)
+    assert sorted(conversions) == ["b.pdf", "c.pdf"]
+    assert bench.db.get_document(doc_id_for("a.pdf")) is None
+    assert bench.run(only=[], describe_figures=False).files_seen == 0
+
+
+# -- stopping, and telling a caller how far the run is ------------------------------------------
+
+
+def test_a_run_can_be_asked_to_stop_and_keeps_what_it_finished(temp_config, store, conversions):
+    def one_at_a_time(raw):
+        raw["ingestion"]["group_files"] = 1
+
+    bench = Bench(temp_config(one_at_a_time), store)
+    for name in ("a.pdf", "b.pdf", "c.pdf"):
+        bench.add(name, name.encode())
+    asked = {"times": 0}
+
+    def stop_before_the_second_file() -> bool:
+        asked["times"] += 1
+        return bench.db.get_document(doc_id_for("a.pdf")) is not None
+
+    report = bench.run(describe_figures=False, should_stop=stop_before_the_second_file)
+
+    assert report.stopped is True
+    assert (report.files_to_ingest, report.files_ingested, report.failures) == (3, 1, ())
+    assert conversions == ["a.pdf"]  # b.pdf was not begun
+    assert bench.db.get_document(doc_id_for("b.pdf")) is None
+    assert any(line.startswith("Stopped. 1 of 3 document(s) were ingested") for line in bench.lines)
+    assert asked["times"] >= 3
+
+    again = bench.run(describe_figures=False)
+    assert (again.stopped, again.files_skipped, again.files_ingested) == (False, 1, 2)
+
+
+def test_a_run_stopped_after_the_figures_keeps_their_descriptions_for_the_next_one(bench):
+    bench.add("Lending Policy.pdf")
+    seen: list[str] = []
+
+    report = bench.run(on_event=lambda kind, data: seen.append(kind), should_stop=lambda: "figure" in seen)
+
+    # Asked to stop while the figure was being described: that figure is finished, and
+    # the run ends before the document is embedded and stored.
+    assert report.stopped is True and report.figures_described == 1 and report.files_ingested == 0
+    assert bench.db.get_document(doc_id_for("Lending Policy.pdf")) is None
+    assert bench.store.count() == 0
+
+    again = bench.run()
+
+    assert (again.stopped, again.files_ingested, again.figures_described) == (False, 1, 0)
+    assert len(bench.llm.requests) == 1  # the vision model was not asked a second time
+
+
+def test_a_run_tells_its_caller_which_step_of_which_file_it_is_on(bench):
+    bench.add("Lending Policy.pdf")
+    bench.add("broken.pdf", b"damaged")
+    seen: list[tuple[str, dict]] = []
+
+    bench.run(on_event=lambda kind, data: seen.append((kind, data)))
+
+    kinds = [kind for kind, _ in seen]
+    assert kinds == ["plan", "file", "file_failed", "file", "file", "figure", "file", "file_done"]
+    assert seen[0][1] == {
+        "seen": 2,
+        "unchanged": 0,
+        "left_alone": 0,
+        "files": ["broken.pdf", "Lending Policy.pdf"],
+    }
+    assert seen[1][1] == {"step": "read", "source_path": "broken.pdf", "position": 1, "of": 2}
+    assert seen[2][1]["source_path"] == "broken.pdf" and "damaged" in seen[2][1]["problem"]
+    assert [data["step"] for kind, data in seen if kind == "file"] == ["read", "read", "figures", "index"]
+    assert seen[5][1] == {"source_path": "Lending Policy.pdf", "position": 1, "of": 1, "page": 2}
+    done = seen[-1][1]
+    assert done["source_path"] == "Lending Policy.pdf" and done["chunks"] > 0 and done["pages"] == 2
+
+
+# -- removing documents whose files are gone ----------------------------------------------------
+
+
+def test_pruning_over_one_folder_keeps_the_documents_that_came_from_another(bench, tmp_path):
+    bench.add("in docs.pdf", b"docs")
+    uploads = bench.config.paths.uploads_dir
+    uploads.mkdir(parents=True)
+    (uploads / "added.pdf").write_bytes(b"uploaded")
+    external = tmp_path / "elsewhere"
+    external.mkdir()
+    (external / "outside.pdf").write_bytes(b"outside")
+    bench.run(describe_figures=False)
+    bench.run(path=uploads, source_root=uploads.parent, describe_figures=False)
+    bench.run(path=external, describe_figures=False)
+    assert len(bench.db.list_documents()) == 3
+
+    bench.run(path=external, prune=True, describe_figures=False)
+    assert len(bench.db.list_documents()) == 3  # the other two folders still hold their files
+
+    (uploads / "added.pdf").unlink()
+    (external / "outside.pdf").unlink()
+    bench.run(path=external, prune=True, describe_figures=False)
+
+    assert [record.source_path for record in bench.db.list_documents()] == ["in docs.pdf"]

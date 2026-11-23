@@ -24,7 +24,7 @@ def project_root() -> Path:
 @pytest.fixture
 def config() -> Config:
     """The project's own config.yaml, loaded."""
-    return load_config(PROJECT_ROOT / "config.yaml")
+    return load_config(PROJECT_ROOT / "config.yaml", use_local=False)
 
 
 @pytest.fixture

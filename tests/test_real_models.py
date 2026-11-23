@@ -8,7 +8,11 @@ Treat a failure here as "the code or this test needs fixing", and find out which
 them one at a time, in the order of this file: each group builds on the one before.
 
 Groups 6 and 7 were added on 2026-11-23 with the speed options and the new chat screen.
-Run with ``-s`` to see the times the 8-bit tests print.
+Laptop A ran four of them that day (the OCR, 8-bit and chat screen tests) and they
+passed. Group 8 was added later the same day, with release 2026-11-23b: the search
+models run without the library's trial run, the time limit for an answer, and adding
+documents from the chat screen. Group 8 HAS NOT BEEN RUN ANYWHERE.
+Run with ``-s`` to see the times the tests print.
 
 What has to be in place first (HANDOVER.md gives the commands):
 
@@ -374,3 +378,184 @@ def test_the_chat_screen_answers_a_question_with_the_real_models(tmp_path, temp_
     assert final["timings"]["first_token_s"] > 0 and final["timings"]["retrieval"]["rerank_s"] > 0
     assert final["timings"]["retrieval"]["search_s"] < 1.0  # the database is not the slow part
     assert stats["queries"]["answered"] == 1
+
+
+# -- 8. Release 2026-11-23b: the two-minute limit, and adding documents from the screen ----
+#
+# Run with -s: the first four print the times that say whether the release did what it
+# was made for on this machine.
+
+LONG_PASSAGES = [
+    " ".join(f"Clause {number}.{part} sets the processing fee on product {number} at {number} percent of the amount." for part in range(1, 1 + length))
+    for number, length in enumerate((4, 26, 9, 31, 14, 20, 6, 28, 11, 17, 23, 8, 30, 13, 19), start=1)
+]
+
+
+def test_the_reranker_run_directly_gives_the_library_s_scores(config_for_module):
+    """docqa.retrieve.reranker runs the model itself, without the library's wasted trial run."""
+    reranker = BGEReranker(config_for_module.reranker.model_copy(update={"quantize": False}))
+    assert reranker.direct, "The reranker is not being run directly. The log says why."
+    question = "What is the processing fee on product 7?"
+    reranker.score(question, LONG_PASSAGES[:2])  # the first call pays for start-up
+
+    ours = timed("reranker, run directly, 15 passages", lambda: reranker.score(question, LONG_PASSAGES))
+    theirs = timed("reranker, the library's call, 15 passages", lambda: reranker._score_with_library(question, LONG_PASSAGES))
+
+    assert ours == pytest.approx(theirs, abs=2e-3)
+    assert max(range(15), key=ours.__getitem__) == 6  # the passage about product 7
+
+
+def test_the_8_bit_reranker_run_directly_is_timed(config_for_module):
+    """The setting the release switches on: reranker.quantize. Compare with the times above."""
+    reranker = BGEReranker(config_for_module.reranker.model_copy(update={"quantize": True}))
+    assert reranker.quantized and reranker.direct
+    question = "What is the processing fee on product 7?"
+    reranker.score(question, LONG_PASSAGES[:2])
+
+    scores = timed("8-bit reranker, run directly, 15 passages", lambda: reranker.score(question, LONG_PASSAGES))
+
+    assert max(range(15), key=scores.__getitem__) == 6
+
+
+def test_the_embedding_model_run_directly_gives_the_library_s_vectors(embedder):
+    """docqa.index.embedder does the same for BGE-M3. Ingestion embeds one document per call."""
+    assert embedder.direct, "The embedding model is not being run directly. The log says why."
+    texts = LONG_PASSAGES[:5]  # a document of five chunks
+    embedder.embed(texts[:1])
+
+    ours = timed("embedding model, run directly, 5 chunks", lambda: embedder.embed(texts))
+    theirs = timed("embedding model, the library's call, 5 chunks", lambda: embedder._embed_with_library(texts))
+
+    for mine, other in zip(ours, theirs, strict=True):
+        assert cosine(mine.dense, other.dense) > 0.9999
+        assert mine.sparse.keys() == other.sparse.keys()
+        assert all(mine.sparse[token] == pytest.approx(other.sparse[token], abs=2e-3) for token in mine.sparse)
+
+
+def test_the_answer_model_does_not_read_the_same_instructions_twice(llm):
+    """What the warm-up relies on: Ollama keeps what it has read of the previous request.
+
+    The same long instructions are sent twice. The second time the model should start
+    to answer much sooner, because it does not read them again. If this fails, the
+    first question after the screen starts takes longer than it could, and nothing
+    else is wrong.
+    """
+    from docqa.generate.prompt import system_prompt
+    from docqa.llm import system_message
+
+    # A first line that no earlier request had, so that nothing of it is known already.
+    rules = f"Run {time.time_ns()}.\n" + system_prompt("I could not find this in the documents.")
+    messages = [system_message(rules), user_message("Reply with the word OK.")]
+
+    first = timed("instructions read for the first time", lambda: llm.chat(messages, max_tokens=1))
+    second = timed("the same instructions again", lambda: llm.chat(messages, max_tokens=1))
+
+    assert second.latency_s < first.latency_s * 0.7, (
+        f"{first.latency_s:.1f} s, then {second.latency_s:.1f} s: the instructions seem to be read again each time."
+    )
+
+
+def served(events_text: str) -> list[tuple[str, dict | None]]:
+    found = []
+    for block in events_text.split("\n\n"):
+        name = next((line[6:].strip() for line in block.splitlines() if line.startswith("event:")), None)
+        data = next((line[5:].strip() for line in block.splitlines() if line.startswith("data:")), None)
+        if name:
+            found.append((name, json.loads(data) if data else None))
+    return found
+
+
+def test_an_answer_keeps_to_the_time_limit_once_the_reading_speed_is_measured(tmp_path, temp_config):
+    """Two questions through the chat screen's server. The second is planned from the first."""
+    from starlette.testclient import TestClient
+
+    from docqa import resources
+    from docqa.web.server import create_app
+
+    def change(raw):
+        from tests.conftest import PROJECT_ROOT
+
+        if raw["parsing"]["artifacts_path"]:
+            raw["parsing"]["artifacts_path"] = str(PROJECT_ROOT / raw["parsing"]["artifacts_path"])
+        raw["retrieval"]["rerank_score_threshold"] = 0.2
+        raw["figures"]["describe"] = False
+
+    config = temp_config(change)
+    limit = config.generation.time_limit_s
+    assert limit is not None, "generation.time_limit_s is null in config.yaml: there is no limit to test."
+    config.paths.docs_dir.mkdir(parents=True)
+    text_pdf(
+        config.paths.docs_dir / "Schedule of Charges.pdf",
+        ["Schedule of charges for retail loans", SENTENCE]
+        + [f"Clause {number} sets the processing fee on product {number} at {number} percent of the amount." for number in range(2, 30)],
+    )
+    assert ingest_path(config.paths.docs_dir, config).failures == ()
+    resources.release("store")
+
+    with TestClient(create_app(config, warm_up=False)) as client:
+        first = served(client.post("/api/ask", json={"question": "What is the processing fee on a home loan?"}).text)
+        second = served(client.post("/api/ask", json={"question": "What is the processing fee on product 12?"}).text)
+
+    for label, stream in (("first answer", first), ("second answer", second)):
+        names = [name for name, _ in stream]
+        assert "error" not in names, stream
+        final = next(data for name, data in stream if name == "answer")
+        took = {
+            data["name"]: data["took_s"] for name, data in stream if name == "step" and data["state"] == "end"
+        }
+        print(
+            f"\n    {label}: {final['latency_s']:.0f} s of {limit:g} s. "
+            + ", ".join(f"{step} {seconds:.1f} s" for step, seconds in took.items())
+            + f"; evidence {final['timings']['evidence_chars']} characters"
+        )
+        assert set(took) == {"question", "database", "ranking", "reading", "writing"}
+
+    plan = next(data for name, data in second if name == "retrieval")["plan"]
+    final = next(data for name, data in second if name == "answer")
+    assert plan["speed_measured"] is True and plan["time_limit_s"] == limit
+    assert "12" in final["text"]
+    # A quarter over is allowed for: the speed was measured on one answer only.
+    assert final["latency_s"] <= limit * 1.25, f"{final['latency_s']:.0f} s for a limit of {limit:g} s"
+
+
+def test_a_pdf_added_from_the_chat_screen_is_ingested_and_answered_from(tmp_path, temp_config):
+    """Upload, ingest and ask, all through the server's own addresses, with the real models."""
+    from starlette.testclient import TestClient
+
+    from docqa.web.server import create_app
+
+    def change(raw):
+        from tests.conftest import PROJECT_ROOT
+
+        if raw["parsing"]["artifacts_path"]:
+            raw["parsing"]["artifacts_path"] = str(PROJECT_ROOT / raw["parsing"]["artifacts_path"])
+        raw["retrieval"]["rerank_score_threshold"] = 0.2
+
+    config = temp_config(change)
+    pdf = text_pdf(
+        tmp_path / "Schedule of Charges.pdf",
+        ["Schedule of charges for retail loans", SENTENCE, "The fee is collected when the loan is sanctioned."],
+    )
+
+    with TestClient(create_app(config, warm_up=False)) as client:
+        stored = client.post("/api/upload?name=Schedule%20of%20Charges.pdf", content=pdf.read_bytes()).json()
+        waiting = client.get("/api/ingest").json()["waiting"]
+        started = client.post("/api/ingest", json={"files": [stored["source_path"]], "describe_figures": False})
+        deadline = time.monotonic() + 900
+        job = None
+        while time.monotonic() < deadline:
+            job = client.get("/api/ingest?files=0").json()["job"]
+            if job["state"] in ("done", "failed", "stopped"):
+                break
+            time.sleep(1)
+        documents = client.get("/api/documents").json()["documents"]
+        answered = served(client.post("/api/ask", json={"question": "What is the processing fee on a home loan?"}).text)
+
+    assert stored["status"] == "stored" and [item["source_path"] for item in waiting] == ["uploads/Schedule of Charges.pdf"]
+    assert started.status_code == 202
+    assert job["state"] == "done" and job["done"] == 1, job
+    print(f"\n    ingested from the screen in {job['elapsed_s']:.0f} s: {job['files'][0]['detail']}")
+    assert [doc["source_path"] for doc in documents] == ["uploads/Schedule of Charges.pdf"]
+    final = next(data for name, data in answered if name == "answer")
+    assert "0.50" in final["text"]
+    assert [(c["doc_title"], c["page"]) for c in final["citations"]] == [("Schedule of Charges", 1)], final["text"]

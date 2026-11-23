@@ -191,6 +191,9 @@ class RetrievalTimings:
     """Scoring the candidates with the reranker. Usually the largest part."""
     candidates: int = 0
     """How many passages were reranked."""
+    candidates_found: int = 0
+    """How many passages hybrid search returned. More than ``candidates`` when
+    ``retrieval.rerank_time_limit_s`` ended the reranking early."""
 
 
 @dataclass(frozen=True)
@@ -207,7 +210,12 @@ class AnswerTimings:
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     evidence_chars: int = 0
-    """Characters of evidence that were sent to the answer model."""
+    """Characters of evidence that were sent to the answer model, with the headers of
+    its passages. The model's reading speed is measured in them."""
+    time_limit_s: float | None = None
+    """The time limit this answer was planned for (``generation.time_limit_s``)."""
+    stopped_at_limit: bool = False
+    """True if the writing was stopped because that limit had run out."""
 
 
 @dataclass(frozen=True)
@@ -284,3 +292,7 @@ class IngestReport:
     """Seconds spent describing figures."""
     index_s: float = 0.0
     """Seconds spent chunking, embedding and storing."""
+    files_to_ingest: int = 0
+    """Files this run set out to ingest: new or changed, after ``limit``."""
+    stopped: bool = False
+    """True if the run was asked to stop before it had been through all of them."""

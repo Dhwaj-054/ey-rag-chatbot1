@@ -180,10 +180,37 @@ out of git, because it describes a company laptop and its network.
 | 2026-11-23 | The fast tests with Streamlit's packages made unimportable | All passed. Streamlit and what only it needed were then taken out of the pinned lists |
 | 2026-11-23 | The text-layer check of `parsing.ocr: auto` over the 618 PDFs | About 100 ms per PDF. 7 PDFs have a scanned page; 611 can be parsed without OCR |
 | 2026-11-23 | The chat screen in a browser, with stand-in models | Question, streamed answer, citations, sources with a table and a figure, refusal, document list with hover card, figures |
-| 2026-11-23 | The database on its own (next section) | |
+| 2026-11-23 | The database on its own (below) | |
+| 2026-11-23 | Release 2026-11-23b: `pytest -m "not slow"` | 574 passed |
+| 2026-11-23 | Release 2026-11-23b: the two search models run from the project's own loop, against the library's own call, on a small model of the same kind | The same scores and vectors, with one run of the model fewer |
+| 2026-11-23 | The ranking step on its own (next section) | |
+| 2026-11-23 | Release 2026-11-23b: the chat screen in a browser, with stand-ins that read 150 characters and write 8 words a second, and a time limit of 20 s | The tracker's five steps with their times and the bar against the limit; an answer inside the limit (18 s); a long answer stopped at the limit, ending with a complete statement; a refused question with reading and writing marked as not needed |
+| 2026-11-23 | Release 2026-11-23b: adding documents in that browser, with a stand-in for Docling | An upload accepted and two refused (not a PDF); three files ingested with each step shown, one of them refused as looking like personal data; a run stopped; the document list and figures updated without a restart |
 
 No document has been parsed, embedded or indexed on this laptop, and no real model has
 run on it.
+
+### The ranking step on its own
+
+Timed on 2026-11-23 on this laptop (4 cores, PyTorch 2.15.0 with 4 threads), with a
+model of the same size and shape as `bge-reranker-v2-m3` (XLM-RoBERTa large: 24 layers,
+568 million numbers) filled with random numbers. The arithmetic is the same as with
+the real weights, so the times are real for this processor; the scores mean nothing.
+15 passages of 180 to 820 tokens, 7,380 tokens in all. The better of two runs each.
+
+| How the 15 passages are scored | Full precision | 8-bit weights |
+|---|---|---|
+| The FlagEmbedding library's way: sorted by length, batches of 4, and the first batch run once as a trial and once more for the result | 42.3 s | 22.0 s |
+| Sorted by length, batches of 4, no trial run (what release 2026-11-23b does) | 32.6 s | 14.2 s |
+| Batches of 4 in the order the search returned them | 40.5 s | 20.9 s |
+| One passage at a time | 38.6 s | 15.0 s |
+
+So the trial run cost about a quarter of the ranking time at full precision and a
+third with 8-bit weights. Batches that are not sorted by length cost a quarter to a
+half more than sorted ones, because every passage is padded to the longest in its batch.
+Laptop A has a different processor: its times will differ, the proportions should not
+by much. `tests/test_real_models.py`, group 8, prints the same comparison there with
+the real model.
 
 ### The database on its own
 

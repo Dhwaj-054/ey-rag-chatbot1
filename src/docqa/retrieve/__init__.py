@@ -5,12 +5,21 @@
 
 Each function takes the embedding model, the store and the reranker as optional keyword
 arguments. Left out, the shared ones from ``docqa.resources`` are used.
+
+Reranking is the slow part, so two things are done about it here:
+
+- The candidates are scored a batch at a time, those that hybrid search placed highest
+  first, and ``retrieval.rerank_time_limit_s`` ends the scoring when it has taken that
+  long. What is left out is then what hybrid search thought least of.
+- A ``progress`` function, if one is given, is told as each step starts and ends and
+  after every batch, so that a screen can show where a question is.
 """
 
 from __future__ import annotations
 
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
+from typing import Any
 
 from docqa.config import Config, ConfigError
 from docqa.index import searchable_text
@@ -18,6 +27,11 @@ from docqa.index.embedder import Embedder
 from docqa.index.store import ChunkStore
 from docqa.retrieve.reranker import Reranker
 from docqa.schema import Chunk, RetrievalResult, RetrievalTimings, ScoredChunk
+
+Progress = Callable[[str, str, dict[str, Any]], None]
+"""``progress(step, state, details)``. Steps: ``question`` (it is turned into vectors),
+``database`` (the two searches) and ``ranking``. States: ``start``, ``progress`` (ranking
+only, after each batch) and ``end``."""
 
 
 def reciprocal_rank_fusion(rankings: Sequence[Sequence[str]], k: int) -> list[tuple[str, float]]:
@@ -66,6 +80,7 @@ def _rank(
     embedder: Embedder | None,
     store: ChunkStore | None,
     reranker: Reranker | None,
+    progress: Progress | None = None,
 ) -> tuple[list[ScoredChunk], RetrievalTimings]:
     """As ``rank_candidates``, and also says how long each step took."""
     question = question.strip()
@@ -73,15 +88,19 @@ def _rank(
         raise ValueError("The question is empty.")
     from docqa import resources
 
+    tell = progress or (lambda step, state, details: None)
     embedder = embedder or resources.get_embedder(config)
     store = store or resources.get_store(config)
     groups = list(access_groups) if access_groups else [config.retrieval.default_access_group]
     limit = config.retrieval.candidates
 
     started = time.perf_counter()
+    tell("question", "start", {})
     query = embedder.embed([question])[0]
     embedded = time.perf_counter()
+    tell("question", "end", {"took_s": embedded - started})
 
+    tell("database", "start", {})
     dense = store.search_dense(query.dense, groups, limit)
     sparse = store.search_sparse(query.sparse, groups, limit)
     chunks: dict[str, Chunk] = {}
@@ -92,23 +111,77 @@ def _rank(
         config.retrieval.rrf_k,
     )[:limit]
     searched = time.perf_counter()
+    tell("database", "end", {"took_s": searched - embedded, "candidates": len(fused)})
     if not fused:
         return [], RetrievalTimings(embed_s=embedded - started, search_s=searched - embedded)
 
     reranker = reranker or resources.get_reranker(config)
-    rerank_scores = reranker.score(question, [searchable_text(chunks[cid]) for cid, _ in fused])
+    tell("ranking", "start", {"of": len(fused)})
+    rerank_scores = _score_in_time(
+        reranker,
+        question,
+        [searchable_text(chunks[chunk_id]) for chunk_id, _ in fused],
+        config.reranker.batch_size,
+        config.retrieval.rerank_time_limit_s,
+        tell,
+    )
+    ranked_s = time.perf_counter() - searched
+    tell("ranking", "end", {"took_s": ranked_s, "done": len(rerank_scores), "of": len(fused)})
     timings = RetrievalTimings(
         embed_s=embedded - started,
         search_s=searched - embedded,
-        rerank_s=time.perf_counter() - searched,
-        candidates=len(fused),
+        rerank_s=ranked_s,
+        candidates=len(rerank_scores),
+        candidates_found=len(fused),
     )
     scored = [
-        ScoredChunk(chunk=chunks[chunk_id], fusion_score=fusion_score, rerank_score=rerank_score)
-        for (chunk_id, fusion_score), rerank_score in zip(fused, rerank_scores, strict=True)
+        ScoredChunk(chunk=chunks[chunk_id], fusion_score=fusion_score, rerank_score=rerank_scores[position])
+        for position, (chunk_id, fusion_score) in enumerate(fused)
+        if position in rerank_scores
     ]
     # sorted() is stable, so chunks with equal rerank scores keep their fusion order.
     return sorted(scored, key=lambda item: item.rerank_score or 0.0, reverse=True), timings
+
+
+def _score_in_time(
+    reranker: Reranker,
+    question: str,
+    passages: Sequence[str],
+    batch_size: int,
+    time_limit_s: float | None,
+    tell: Progress,
+) -> dict[int, float]:
+    """Score the passages a batch at a time until all are done or the time is up.
+
+    Returns ``{position: score}`` for the passages that were scored. The passages
+    arrive best first (by hybrid search), and so does the work: the first batch is
+    always scored, and what a time limit leaves out is from the far end.
+    """
+    began = time.perf_counter()
+    scores: dict[int, float] = {}
+    for batch in _batches(reranker, question, passages, batch_size):
+        scores.update(batch)
+        tell("ranking", "progress", {"done": len(scores), "of": len(passages)})
+        if time_limit_s is not None and time.perf_counter() - began >= time_limit_s:
+            break
+    return scores
+
+
+def _batches(
+    reranker: Reranker, question: str, passages: Sequence[str], batch_size: int
+) -> Iterator[list[tuple[int, float]]]:
+    """The reranker's scores, ``(position, score)`` pairs a batch at a time.
+
+    The real reranker forms the batches itself, by length. Any other one (the tests'
+    stand-in) is given the passages in slices.
+    """
+    in_batches = getattr(reranker, "score_batches", None)
+    if in_batches is not None:
+        yield from in_batches(question, passages)
+        return
+    for start in range(0, len(passages), batch_size):
+        part = reranker.score(question, passages[start : start + batch_size])
+        yield [(start + offset, score) for offset, score in enumerate(part)]
 
 
 def retrieve(
@@ -119,6 +192,7 @@ def retrieve(
     embedder: Embedder | None = None,
     store: ChunkStore | None = None,
     reranker: Reranker | None = None,
+    progress: Progress | None = None,
 ) -> RetrievalResult:
     """Find the chunks most relevant to a question.
 
@@ -137,6 +211,7 @@ def retrieve(
         config: The loaded configuration.
         access_groups: Groups the user may read. Defaults to
             ``retrieval.default_access_group`` alone.
+        progress: Told as each step starts and ends (see ``Progress``).
 
     Raises:
         ConfigError: ``retrieval.rerank_score_threshold`` is not set.
@@ -150,7 +225,7 @@ def retrieve(
             "the value it proposes in config.yaml."
         )
     started = time.perf_counter()
-    ranked, timings = _rank(question, config, access_groups, embedder, store, reranker)
+    ranked, timings = _rank(question, config, access_groups, embedder, store, reranker, progress)
     top = tuple(ranked[: config.retrieval.top_k])
     best_score = top[0].rerank_score if top else None
     return RetrievalResult(

@@ -8,11 +8,20 @@ It serves one page (``static/``) and a small API for it:
     GET  /api/history     the most recent questions
     POST /api/ask         one question; the reply is a stream of events (see below)
     GET  /api/figure/<doc_id>/<file>   one cropped figure image
+    GET  /api/ingest      the PDFs waiting to be ingested, and the ingestion run, if there is one
+    POST /api/upload      one PDF, sent as the body of the request (?name=<file name>)
+    POST /api/ingest      start ingesting the files named in the request
+    POST /api/ingest/stop ask the running ingestion to stop
 
 ``/api/ask`` answers with server-sent events, so that the page can show each step as
-it happens instead of waiting minutes for a finished answer:
+it happens instead of waiting minutes for a finished answer. The page reads them with
+the browser's Streams API (``fetch`` and ``response.body.getReader()``):
 
-    status     {"stage": "waiting" | "searching"}
+    start      {"time_limit_s": 120}   the clock of this answer starts
+    step       {"name": ..., "state": "start" | "progress" | "end", ...}
+               names: waiting (for another question or an ingestion), question (it is
+               turned into vectors), database, ranking (with "done" and "of" after
+               every batch), reading (the answer model reads the evidence) and writing
     retrieval  the passages found, with scores and which ones go to the answer model
     token      {"text": "..."}   one piece of the answer as the model writes it
     answer     the finished answer: text with citations written out, notes, timings
@@ -22,13 +31,21 @@ it happens instead of waiting minutes for a finished answer:
 Things done here for speed:
 
 - The search models are loaded in the background when the server starts
-  (``ui.warm_up``), and the answer model is asked for one word so that Ollama loads
-  it. The first question then does not wait for any of that.
+  (``ui.warm_up``), and the answer model is given its instructions and asked for one
+  word. Ollama then has the model in memory and has already read the instructions,
+  which are the same for every question, so the first question does not wait for
+  either.
 - The passages are sent to the page as soon as the search ends, before the answer
   model has written anything. The reader has something to read during the wait.
+- An answer is planned to fit ``generation.time_limit_s`` (``docqa.generate.budget``).
 - Closing the page, or pressing Stop, ends the request to the answer model. The CPU
   is not left working on an answer nobody is waiting for.
-- One question is answered at a time. Two at once would only make both slower.
+- One question is answered at a time, and none while documents are being ingested.
+  Two heavy jobs at once would only make both slower.
+
+Ingestion started from the page runs in this process, so it shares the index with the
+questions (Qdrant's local mode lets one program open it). ``docqa.web.ingestion`` holds
+that part.
 
 The server listens on this machine only, unless ``ui.allow_network`` says otherwise.
 """
@@ -56,11 +73,15 @@ from starlette.staticfiles import StaticFiles
 
 from docqa import resources
 from docqa.config import Config, ConfigError, load_config
-from docqa.generate import answer, answer_body, choose_evidence, log_query
-from docqa.llm import LLMError, is_local_url, user_message
+from docqa.generate import answer, answer_body, choose_evidence, log_query, measured_read_speed
+from docqa.generate.budget import AnswerPlan, plan_answer
+from docqa.generate.prompt import system_prompt
+from docqa.llm import LLMError, is_local_url, system_message, user_message
 from docqa.retrieve import retrieve
 from docqa.schema import Answer, RetrievalResult, ScoredChunk
 from docqa.stats import index_stats, list_documents, short_title
+from docqa.web import ingestion
+from docqa.web.ingestion import IngestJob
 
 log = logging.getLogger(__name__)
 
@@ -84,12 +105,37 @@ class AppState:
         self.warm_up_wanted = warm_up
         self.models: dict[str, Any] = {"state": "idle" if not warm_up else "loading", "detail": "", "seconds": {}}
         self.busy = threading.Lock()
+        """Held by whatever heavy job is running: one answer, or one ingestion."""
+        self.job: IngestJob | None = None
+        self.job_lock = threading.Lock()
         self._llm_checked_at = 0.0
         self._llm_status: dict[str, Any] = {"reachable": None, "answer_model_present": None, "detail": ""}
         self._lock = threading.Lock()
 
     def warm_up(self) -> None:
         """Load the search models, then wake the answer model. Runs in its own thread."""
+        self.load_search_models()
+        if self.models["state"] != "ready":
+            return
+        try:
+            started = time.perf_counter()
+            # The instructions go with it. Ollama keeps what it has read of the last
+            # request, and a question starts with the same instructions, so the model
+            # does not read them again when the first question comes.
+            resources.get_llm(self.config).chat(
+                [
+                    system_message(system_prompt(self.config.generation.not_found_message)),
+                    user_message("Reply with the word OK."),
+                ],
+                max_tokens=1,
+            )
+            self.models["seconds"]["answer_model"] = time.perf_counter() - started
+        except LLMError as exc:
+            log.warning("The answer model could not be woken: %s", exc)
+
+    def load_search_models(self) -> None:
+        """Open the index and load the embedding model and the reranker."""
+        self.models = {"state": "loading", "detail": "", "seconds": {}}
         try:
             seconds = resources.warm_up(self.config)
         except Exception as exc:  # noqa: BLE001 - shown on the page, not raised
@@ -97,12 +143,11 @@ class AppState:
             log.warning("The search models could not be loaded: %s", exc)
             return
         self.models = {"state": "ready", "detail": "", "seconds": seconds}
-        try:
-            started = time.perf_counter()
-            resources.get_llm(self.config).chat([user_message("Reply with the word OK.")], max_tokens=1)
-            seconds["answer_model"] = time.perf_counter() - started
-        except LLMError as exc:
-            log.warning("The answer model could not be woken: %s", exc)
+
+    def ingesting(self) -> bool:
+        """True while an ingestion started from the page is waiting or running."""
+        job = self.job
+        return job is not None and job.active
 
     def llm_status(self) -> dict[str, Any]:
         """Whether the model server answers and has the answer model. Checked at most every 20 s."""
@@ -185,6 +230,8 @@ def create_app(config: Config | None = None, *, warm_up: bool | None = None) -> 
         return FileResponse(path, media_type="image/png", headers={"Cache-Control": "max-age=3600"})
 
     async def ask(request: Request) -> Response:
+        if not same_origin(request):
+            return _refused_origin()
         try:
             body = await request.json()
             question = str(body["question"]).strip()
@@ -239,6 +286,45 @@ def create_app(config: Config | None = None, *, warm_up: bool | None = None) -> 
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    async def ingest_state(request: Request) -> Response:
+        try:
+            since = max(0, int(request.query_params.get("since", "0")))
+        except ValueError:
+            since = 0
+        with_files = request.query_params.get("files", "1") != "0"
+        return JSONResponse(await asyncio.to_thread(ingestion.state_payload, state, since, with_files))
+
+    async def upload(request: Request) -> Response:
+        if not same_origin(request):
+            return _refused_origin()
+        if state.ingesting():
+            return JSONResponse(
+                {"error": "Documents are being ingested. Add files when that has finished."}, status_code=409
+            )
+        code, body = await ingestion.receive_upload(request, config)
+        return JSONResponse(body, status_code=code)
+
+    async def ingest_start(request: Request) -> Response:
+        if not same_origin(request):
+            return _refused_origin()
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError
+        except ValueError:
+            return JSONResponse({"error": "Send JSON that names the files to ingest."}, status_code=400)
+        code, reply = await asyncio.to_thread(ingestion.start, state, body)
+        return JSONResponse(reply, status_code=code)
+
+    async def ingest_stop(request: Request) -> Response:
+        if not same_origin(request):
+            return _refused_origin()
+        job = state.job
+        if job is None or not job.active:
+            return JSONResponse({"error": "No ingestion is running."}, status_code=409)
+        job.ask_to_stop()
+        return JSONResponse({"job": job.snapshot(0)})
+
     app = Starlette(
         routes=[
             Route("/", index),
@@ -248,12 +334,37 @@ def create_app(config: Config | None = None, *, warm_up: bool | None = None) -> 
             Route("/api/history", history),
             Route("/api/figure/{doc_id}/{name}", figure),
             Route("/api/ask", ask, methods=["POST"]),
+            Route("/api/ingest", ingest_state, methods=["GET"]),
+            Route("/api/ingest", ingest_start, methods=["POST"]),
+            Route("/api/ingest/stop", ingest_stop, methods=["POST"]),
+            Route("/api/upload", upload, methods=["POST"]),
             Mount("/static", app=StaticFiles(directory=STATIC_DIR), name="static"),
         ],
         lifespan=lifespan,
     )
     app.state.docqa = state
     return app
+
+
+def same_origin(request: Request) -> bool:
+    """False for a request that some other website made the browser send.
+
+    The server listens on this machine, where any page open in the browser can reach
+    it. A page from elsewhere must not be able to start an answer, an upload or an
+    ingestion. Browsers say where a request comes from; a program that is not a
+    browser (the tests, ``curl``) sends neither header and is let through.
+    """
+    site = request.headers.get("sec-fetch-site")
+    if site is not None and site not in ("same-origin", "none"):
+        return False
+    origin = request.headers.get("origin")
+    if origin is None:
+        return True
+    return urlsplit(origin).netloc == request.headers.get("host")
+
+
+def _refused_origin() -> Response:
+    return JSONResponse({"error": "This request did not come from the chat screen."}, status_code=403)
 
 
 # -- answering one question ------------------------------------------------------------
@@ -265,15 +376,26 @@ def _answer_question(
     """Search, answer and log one question, reporting each step through ``emit``."""
     config = state.config
     if not state.busy.acquire(blocking=False):
-        emit("status", {"stage": "waiting"})
+        emit("step", {"name": "waiting", "state": "start", "reason": "ingestion" if state.ingesting() else "question"})
         state.busy.acquire()
+        emit("step", {"name": "waiting", "state": "end"})
     try:
         if cancel.is_set():
             raise Cancelled
-        emit("status", {"stage": "searching"})
-        retrieval = retrieve(question, config)
-        given = choose_evidence(retrieval.chunks, config)[0] if retrieval.found else ()
-        emit("retrieval", _retrieval_payload(retrieval, given, config))
+        started = time.perf_counter()
+        emit("start", {"time_limit_s": config.generation.time_limit_s})
+
+        def on_step(name: str, step_state: str, details: dict[str, Any]) -> None:
+            if cancel.is_set():
+                raise Cancelled  # between two batches of the ranking, for one
+            emit("step", {"name": name, "state": step_state, **details})
+
+        retrieval = retrieve(question, config, progress=on_step)
+        plan = plan_answer(
+            config, used_s=time.perf_counter() - started, read_chars_per_s=measured_read_speed(config)
+        )
+        given = choose_evidence(retrieval.chunks, config, plan.evidence_budget)[0] if retrieval.found else ()
+        emit("retrieval", _retrieval_payload(retrieval, given, config, plan))
         if cancel.is_set():
             raise Cancelled
 
@@ -282,7 +404,9 @@ def _answer_question(
                 raise Cancelled
             emit("token", {"text": piece})
 
-        reply = answer(question, retrieval, resources.get_llm(config), config, on_text=on_text)
+        reply = answer(
+            question, retrieval, resources.get_llm(config), config, on_text=on_text, plan=plan, on_step=on_step
+        )
         log_query(reply, config)
         emit("answer", _answer_payload(reply))
     finally:
@@ -336,7 +460,10 @@ def _source_payload(rank: int, source: ScoredChunk, given: bool) -> dict[str, An
 
 
 def _retrieval_payload(
-    retrieval: RetrievalResult, given: tuple[ScoredChunk, ...], config: Config
+    retrieval: RetrievalResult,
+    given: tuple[ScoredChunk, ...],
+    config: Config,
+    plan: AnswerPlan | None = None,
 ) -> dict[str, Any]:
     given_ids = {source.chunk.chunk_id for source in given}
     threshold = config.retrieval.rerank_score_threshold
@@ -353,6 +480,15 @@ def _retrieval_payload(
         "threshold": threshold,
         "elapsed_s": retrieval.elapsed_s,
         "timings": asdict(retrieval.timings),
+        "plan": None
+        if plan is None
+        else {
+            "time_limit_s": plan.time_limit_s,
+            "evidence_chars": plan.evidence_chars,
+            "read_chars_per_s": plan.read_chars_per_s,
+            "speed_measured": plan.speed_measured,
+            "shortened": plan.shortened,
+        },
         "sources": [
             _source_payload(rank, source, source.chunk.chunk_id in given_ids)
             for rank, source in visible
@@ -398,8 +534,8 @@ def _status(state: AppState) -> dict[str, Any]:
     problems = []
     if index.passages == 0:
         problems.append(
-            "No documents are indexed yet. Stop this screen, run "
-            "'python -m docqa.ingest docs --limit 3', then start it again."
+            "No documents are indexed yet. Use 'Add documents' in the side panel. (From a "
+            "terminal, with this screen stopped: 'python -m docqa.ingest docs --limit 3'.)"
         )
     if threshold is None:
         problems.append(
@@ -419,6 +555,7 @@ def _status(state: AppState) -> dict[str, Any]:
         "llm": llm,
         "index": {"documents": index.documents, "passages": index.passages},
         "threshold": threshold,
+        "ingesting": state.ingesting(),
         "settings": {
             "answer_model": config.llm.answer_model,
             # None when the answer model is on this machine; otherwise the server that
@@ -429,10 +566,13 @@ def _status(state: AppState) -> dict[str, Any]:
             "vision_model": config.llm.vision_model,
             "embedding_model": config.embedding.model,
             "reranker_model": config.reranker.model,
+            "reranker_8_bit": config.reranker.quantize,
             "candidates": config.retrieval.candidates,
             "top_k": config.retrieval.top_k,
+            "rerank_time_limit_s": config.retrieval.rerank_time_limit_s,
             "evidence_char_budget": config.generation.evidence_char_budget,
             "evidence_score_ratio": config.generation.evidence_score_ratio,
+            "time_limit_s": config.generation.time_limit_s,
         },
     }
 
@@ -473,6 +613,8 @@ def main(argv: list[str] | None = None) -> int:
     port = args.port or config.ui.port
     url = f"http://{'127.0.0.1' if config.ui.host in ('127.0.0.1', 'localhost') else config.ui.host}:{port}"
     print(f"Chat screen: {url}   (Ctrl+C stops it)")
+    if config.local_file is not None:
+        print(f"Settings of this machine are taken from {config.local_file.name}.")
     if config.ui.warm_up and not args.no_warm_up:
         print("Loading the search models in the background. The screen says when they are ready.")
     if args.open:

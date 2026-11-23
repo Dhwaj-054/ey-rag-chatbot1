@@ -1,6 +1,6 @@
 # Handover: setting up, updating and speeding up the build
 
-Written on 2026-11-20. Updated on 2026-11-23 with release 2026-11-23.
+Written on 2026-11-20. Updated on 2026-11-23 with releases 2026-11-23 and 2026-11-23b.
 
 Read this before running anything. It says what exists, what has and has not been
 checked, where the time of an answer goes and what to try about it, how to update a
@@ -21,38 +21,107 @@ Two laptops are involved (`machine.md` describes both):
 - **Laptop A has the models.** Release 2026-11-20 was set up there with GitHub Copilot.
   On 2026-11-21 it ingested 15 PDFs in 1,573 s (about 105 s each; 79 chunks, 3 figures)
   and answered questions. One question was timed: 81 s for the search and 329 s for the
-  whole answer. The code ran as it was written: compared with the release, only the
-  threshold in `config.yaml` and `machine.md` were changed on that laptop, and both
-  changes are part of this release.
+  whole answer.
 
-**Release 2026-11-23, this one, has not been run with a real model.** It replaces the
-chat screen, changes what is sent to the answer model, and restructures ingestion.
-Everything in the table marked "stand-ins" was tested with fakes in place of the models.
+**Release 2026-11-23 ran on Laptop A on 2026-11-23** (`machine.md` has the record):
+`check_env` passed all 24 checks, bringing the 15 documents up to date took 404 s
+(384 s of it embedding and storing), and the four new real-model tests passed. The
+8-bit option was timed there on short texts: 12 passages ranked in 1.5 s instead of
+3.1 s, 12 texts embedded in 1.2 s instead of 1.8 s. Two commits were made on that
+laptop and are part of this release: `--ingested-only` now matches documents in a
+folder outside the project, and the speed settings were lowered (15 candidates, 4
+passages kept, 8,000 characters of evidence, 400 tokens). Answers were still found
+too slow. How long they took with those settings was not recorded.
+
+**Release 2026-11-23b, this one, has not been run with a real model.** It was asked
+for on 2026-11-23: an answer in at most two minutes, a progress tracker on the answer,
+and adding PDFs from the chat screen. Everything in the table marked "stand-ins" was
+tested with fakes in place of the models.
 
 | Part | Code | How it was checked | Never checked |
 |---|---|---|---|
-| Configuration, environment check | `config.py`, `check_env.py` | Tests; `check_env` run for real on Laptop B (18 passed, 6 failed: the six are the missing models) | |
+| Configuration, environment check | `config.py`, `check_env.py` | Tests; `check_env` run for real on both laptops (Laptop A: 24 passed) | `config.local.yaml` on Laptop A |
 | Document identity and manifest | `ingest/documents.py`, `scripts/build_manifest.py` | Tests; the manifest was built from the real RBI index and matched 607 of the 618 PDFs | |
-| Docling parsing | `ingest/parser.py` | Tests of the options and the parse cache. Release 2026-11-20 parsed 15 real PDFs on Laptop A | The new choice between parsing with and without OCR, with Docling's real models |
+| Docling parsing | `ingest/parser.py` | Tests of the options and the parse cache. 15 real PDFs on Laptop A; parsing without OCR passed its real-model test there | |
 | Text-layer check (`parsing.ocr: auto`) | `ingest/parser.py` | Tests; run over all 618 real PDFs on Laptop B: 7 have a scanned page | |
-| Reading Docling's output | `ingest/elements.py`, `ingest/tables.py` | Tests on Docling documents built by hand. Release 2026-11-20 on 15 real PDFs | Which real pictures the new size rules skip |
+| Reading Docling's output | `ingest/elements.py`, `ingest/tables.py` | Tests on Docling documents built by hand. 15 real PDFs on Laptop A | Which real pictures the size rules skip |
 | Personal-data check | `ingest/screening.py` | Tests | Its false-alarm rate on real circulars |
-| Figure descriptions | `ingest/figures.py` | Tests with a faked model server. Release 2026-11-20 described 3 real figures | Descriptions of the scaled-down images |
+| Figure descriptions | `ingest/figures.py` | Tests with a faked model server. 3 real figures on Laptop A | Descriptions of the scaled-down images |
 | Chunking | `ingest/chunker.py` | Tests with words counted as tokens | Sizes with BGE-M3's real tokenizer |
-| Ingestion in steps | `ingest/pipeline.py` | Tests with stand-ins | Whether memory is really freed between the steps |
-| Embedding and reranking | `index/embedder.py`, `retrieve/reranker.py` | Release 2026-11-20 on Laptop A | The 8-bit option (`quantize.py`): tested on a small network only |
+| Ingestion in steps | `ingest/pipeline.py` | Tests with stand-ins; the refresh of 15 documents on Laptop A | Stopping a run, and a chosen set of files, with real models |
+| Embedding and reranking, run directly | `index/embedder.py`, `retrieve/reranker.py`, `batching.py` | Tests against the library itself on a small model of the same kind: the same numbers, one model run fewer. Timed on Laptop B with a stand-in of the reranker's size | **With the real models.** Three slow tests do it |
+| 8-bit weights | `quantize.py` | Laptop A's real-model tests, on short texts | How it changes which passages are found on real questions |
 | Vector store | `index/store.py` | Tests against the real Qdrant client; timed with 79, 3,000 and 20,000 passages (`machine.md`) | |
-| Retrieval | `retrieve/__init__.py` | Tests: real Qdrant, stand-in models | Search quality |
-| Answers and citations | `generate/` | Tests with a faked model server | Whether the answer model writes the new short citations (`[E1, p. 12]`) |
-| Chat screen | `web/` | Tests through the server's own addresses, stand-in models. Opened in a browser on Laptop B with stand-in models | With real answers |
-| Statistics | `stats.py`, `db.py` | Tests | On a real query log |
+| Retrieval, with the limit on ranking time | `retrieve/__init__.py` | Tests: real Qdrant, stand-in models, a clock that the test moves | Search quality; how many candidates the limit leaves on Laptop A |
+| Answers and citations | `generate/` | Tests with a faked model server. Real answers on Laptop A with release 2026-11-23 | The shorter instruction (prompt version 3) |
+| The time limit for an answer | `generate/budget.py` | Tests with a faked model server and a clock that the test moves; watched in a browser with stand-ins that read and write at fixed speeds | **Whether an answer on Laptop A really ends within two minutes** |
+| Chat screen and its progress tracker | `web/server.py`, `web/static/` | Tests through the server's own addresses; opened in a browser on Laptop B with stand-in models | With real answers |
+| Adding documents from the screen | `web/ingestion.py` | Tests through the server's own addresses with the real pipeline, register and index; done in a browser on Laptop B with a stand-in for Docling | With Docling and the real models; memory use while it runs |
+| Statistics | `stats.py`, `db.py` | Tests | The new figures on a real query log |
 | Evaluation | `evaluate.py` | Tests with stand-ins | On real questions. `eval/questions.csv` has no rows yet |
 | Comparing an older copy | `scripts/compare_with_release.py` | Tests; run on the 2026-11-20 zip and on the code from Laptop A | |
 
-Test counts on 2026-11-23: 460 fast tests pass on Laptop B (`pytest -m "not slow"`). 15
-tests need the real models (`pytest -m slow`, in `tests/test_real_models.py`). None of
-the 15 has been run on Laptop B, and it is not recorded whether the first 11 were run on
-Laptop A. A failure there may be a mistake in the test as easily as in the code.
+Test counts on 2026-11-23: 574 fast tests pass on Laptop B (`pytest -m "not slow"`). 21
+tests need the real models (`pytest -m slow`, in `tests/test_real_models.py`). Laptop A
+ran four of them. The six of group 8 are new with this release and have been run
+nowhere. A failure there may be a mistake in the test as easily as in the code.
+
+## What changed on 2026-11-23b
+
+1. **An answer has a time limit:** `generation.time_limit_s: 120`. Two things keep to
+   it. After the search, the evidence is cut to what the answer model can read in the
+   time that is left, at the reading speed measured on this machine from the answers
+   already given. And when the time is up, the writing stops at the end of the last
+   complete statement, and the answer says that it was stopped. The reading itself is
+   never interrupted, so the first answers on a machine, before a speed is measured,
+   can run over. "Making it faster" below says what two minutes buy.
+2. **Ranking does a quarter less work.** The FlagEmbedding library runs its longest
+   batch of passages once as a trial, throws the result away and runs it again. The
+   reranker is now run from the project's own loop (`retrieve/reranker.py`), with the
+   inputs prepared by the library's own functions. Timed on Laptop B with a stand-in
+   model of the reranker's size, for 15 passages: 42 s the library's way, 33 s without
+   the trial run. With 8-bit weights: 22 s and 14 s.
+3. **The reranker runs with 8-bit weights:** `reranker.quantize: true`. Laptop A's own
+   test showed it ranking twice as fast with the answering passage still first. What
+   it does to the ranking of real questions has not been measured. The threshold of
+   0.50 was a temporary value before and is one now.
+4. **Ranking has a time limit of its own:** `retrieval.rerank_time_limit_s: 20`. The
+   candidates that hybrid search placed highest are scored first. When the time is up,
+   the rest are left out, and the answer's tracker says how many were scored.
+5. **The embedding model is run the same way.** Ingestion embeds one document at a
+   time. A document of five chunks was three runs of the model; it is two now.
+6. **The answer model is given its instructions when the screen starts.** Ollama keeps
+   what it has read of the last request, and every question starts with the same
+   instructions, so the first question does not wait for them to be read.
+7. **Every answer shows a progress tracker:** five steps (question, search, ranking,
+   reading, writing), the one in hand with a running clock, ranking with a count, a
+   bar for the time used of the limit, and one line that says what is happening. The
+   server sends each step as it happens and the page reads them with the browser's
+   Streams API.
+8. **PDFs can be added from the chat screen:** "+ Add" in the side panel. Files are
+   dropped or chosen there and copied to `data/uploads`, or ticked in the list of PDFs
+   that lie in the documents folder and were never ingested. The run shows each file
+   and each step, can be stopped, and refuses a file that looks like personal data, as
+   the command line does. Questions wait while it runs. The screen no longer has to be
+   stopped to ingest.
+9. **Settings of one machine go in `config.local.yaml`,** next to `config.yaml`, with
+   only the keys that differ. It is not in git, so an update of the project does not
+   overwrite it and it never reaches the other laptop. Laptop A needs it for the folder
+   its documents are in.
+10. **A document keeps its name whichever part of the documents folder is ingested.**
+    The fix made on Laptop A named a file by its place below the folder given on the
+    command line. For a sub-folder of the documents folder that gave a known document a
+    second name. Inside the documents folder the name is now always the place below
+    that folder; a folder elsewhere is named as on Laptop A. `--prune` no longer
+    removes documents whose files are in another of the folders.
+11. **The instruction to the answer model asks for at most four sentences** or a short
+    list (prompt version 3).
+12. **The statistics show** the ranking time, the answer model's reading speed and how
+    many answers were stopped at the limit.
+13. **A request that another website makes the browser send is refused** (asking,
+    uploading, ingesting).
+
+No document has to be ingested again for this release.
 
 ## What changed on 2026-11-23
 
@@ -60,11 +129,10 @@ Laptop A. A failure there may be a mistake in the test as easily as in the code.
    `python -m docqa.web --open`. On the left it lists the ingested documents by a short
    name (point at one for the full title, file, version, date, pages and passages) and
    shows the figures: documents, pages, passages, questions asked, typical times. The
-   passages found for a question appear before the answer starts. Each answer shows how
-   long every step took. Stop ends an answer.
+   passages found for a question appear before the answer starts. Stop ends an answer.
 2. **Models are loaded when the screen starts** (`ui.warm_up`), in the background, so
    the first question does not pay for loading them.
-3. **The answer model reads less.** Of the six passages kept, only those that score at
+3. **The answer model reads less.** Of the passages kept, only those that score at
    least half as well as the best one are sent (`generation.evidence_score_ratio`). The
    sources list says which ones were not sent.
 4. **The answer model writes less.** It cites `[E1, p. 12]`, and the code turns that
@@ -78,22 +146,19 @@ Laptop A. A failure there may be a mistake in the test as easily as in the code.
    the 618 sample PDFs, 7 have one.
 8. **Decorative pictures are skipped and figure images are scaled down** before the
    vision model sees them (`figures.min_side_px`, `max_aspect_ratio`, `max_side_px`).
-9. **Optional 8-bit models** (`embedding.quantize`, `reranker.quantize`). Off.
+9. **Optional 8-bit models** (`embedding.quantize`, `reranker.quantize`).
 10. **The vision model can have its own server address** (`llm.vision_base_url`), and
     the screen and `check_env` say so when a model runs on another machine.
 11. **`python -m docqa.ingest --ingested-only`** brings the documents already in the
     index up to date and leaves new files alone.
 12. **Streamlit is no longer installed.** `starlette`, `uvicorn`, `pypdfium2`, `pillow`
-    and `psutil` are pinned instead. All five were already installed, as dependencies.
-
-After the update every ingested document is indexed again once, because the way a
-document's passages are recorded changed. Parse results and figure descriptions should
-come from the caches, which makes this the embedding step alone.
+    and `psutil` are pinned instead.
 
 ## Where the time of an answer goes
 
 Measured on Laptop A with release 2026-11-20, for one question: the search took 81 s
-and the whole answer 329 s. So the answer model took about 248 s.
+and the whole answer 329 s. So the answer model took about 248 s. With the settings
+lowered on 2026-11-23 answers were still found too slow; no times were recorded.
 
 **The database is not the slow part.** Timed on Laptop B on 2026-11-23, with no model
 loaded, through the project's own search code:
@@ -106,12 +171,26 @@ loaded, through the project's own search code:
 
 Writing a question to the SQLite log took 14 ms. `machine.md` has the details.
 
-So the 81 s is the two search models on the processor: BGE-M3 reads the question, and
-the reranker reads the question against each of 30 passages. For the first question
-after a start, loading both models is in there as well. The 248 s is the answer model
-on the processor: reading the six passages, then writing. Release 2026-11-20 did not
-record how these split. This release does, per question, on the screen and in
-`python -m docqa.stats`.
+**The search time is the reranker.** It reads the question against every candidate
+passage, and it is a model of 568 million numbers on a laptop processor. Timed on
+Laptop B (4 cores) with a model of the same size and shape, filled with random numbers,
+for 15 passages of 180 to 820 tokens:
+
+| How the 15 passages are scored | Full precision | 8-bit weights |
+|---|---|---|
+| The library's call, as releases up to 2026-11-23 did it | 42 s | 22 s |
+| The project's own loop: sorted by length, no trial run (this release) | 33 s | 14 s |
+| Batches in the order the search returned them | 41 s | 21 s |
+| One passage at a time | 39 s | 15 s |
+
+So this release should rank in about a third of the time that release 2026-11-23 took
+with the same number of candidates. Laptop A's processor is a different one: its times
+will differ, the proportions should not by much. Its real-model tests print them.
+
+**The rest is the answer model,** reading and then writing. On a laptop processor a 7B
+model reads some tens of characters a second and writes a few tokens a second. Since
+release 2026-11-23 both are recorded with every answer, and `python -m docqa.stats`
+prints the medians: "wait for the first word", "reading speed" and "writing speed".
 
 **Why MongoDB or Atlas would not make it faster.** A different database replaces the
 6 ms, not the minutes. It would also break two rules of the project. Atlas is a cloud
@@ -123,77 +202,115 @@ through `qdrant.url`.
 
 ## Making it faster
 
-Nothing in this section has been measured with real models. The expected effects are
-estimates. Measure on Laptop A, change one thing at a time, and keep what helps.
+**What two minutes buy.** The limit is divided like this, with the settings of this
+release:
+
+| Part | Time | Set by |
+|---|---|---|
+| Search: the question, the database, ranking | up to about 20 s | `retrieval.rerank_time_limit_s`, `retrieval.candidates` |
+| The answer model writes | at least 35 s | `generation.writing_reserve_s`: about 150 tokens at 4 to 5 tokens a second |
+| The answer model reads | what is left: about 65 s | the evidence is cut to fit |
+
+How much evidence fits in 65 s depends on the reading speed, which only Laptop A can
+measure. At 45 characters a second, the cautious value assumed until there is a
+measurement, it is about 2,900 characters: one passage, or most of one. At 80 it is
+about 5,200: two. That is the price of the limit on this processor: the answer is
+written from one or two passages where release 2026-11-20 gave the model six. The
+sources list shows which passages were found and which the model was given, and the
+answer carries a note when something was cut.
+
+The limit is an aim that the code plans for, not a guarantee. The reading is never
+interrupted, so an answer runs over when the model reads more slowly than it was
+measured to, and the first answers on a machine are planned from the assumed speed.
+What is guaranteed is that the writing stops when the time is up, but never sooner than
+35 s after the first word. To have no limit, set `generation.time_limit_s: null`.
 
 **Measure first.** Ask the same three questions before and after each change. The
-screen shows the time of every step under each answer, and this prints the medians:
+tracker on each answer shows the time of every step, and this prints the medians:
 
 ```powershell
 python -m docqa.stats
 ```
 
-**Already switched on in this release, at no cost to quality that is known:**
+**Switched on in this release:**
 
-| What | Setting | What it saves |
+| What | Setting | What it costs |
 |---|---|---|
-| Models loaded at start | `ui.warm_up: true` | The loading time, off the first question |
-| Short citations | none (`generate/prompt.py`) | The model writes a few characters per citation, not a title |
-| Stop button | none | A wait that is not worth it |
+| The time limit | `generation.time_limit_s: 120` | Less evidence for the answer model, and an answer that may be stopped |
+| Ranking without the library's trial run | none (`retrieve/reranker.py`) | Nothing that is known: the scores are the same |
+| 8-bit reranker | `reranker.quantize: true` | Scores shift slightly. Not measured on real questions |
+| Limit on ranking time | `retrieval.rerank_time_limit_s: 20` | Candidates that hybrid search placed lowest may not be scored |
+| Instructions given at start | `ui.warm_up: true` | Nothing |
+| Shorter answers asked for | none (`generate/prompt.py`, version 3) | An answer that needs more than four sentences or a short list |
+| From Laptop A, 2026-11-23 | `candidates: 15`, `top_k: 4`, `evidence_char_budget: 8000`, `max_tokens: 400` | Fewer passages found and given |
+| From Laptop A, 2026-11-23 | Ollama keeps a model in memory for 30 minutes: the user environment variable `OLLAMA_KEEP_ALIVE=30m` | Memory stays in use |
 
-**Already switched on, with a cost:**
+**To try on Laptop A, most promising first:**
 
-| What | Setting | What it saves | What it costs |
-|---|---|---|---|
-| Weak passages are not sent | `generation.evidence_score_ratio: 0.5` | Reading time of the answer model, the largest part of an answer | A fact that is only in a weak passage is not available to the model. `0` sends all six |
-| Evidence budget | `generation.evidence_char_budget: 12000` | The same | Long evidence is cut, and the answer says so |
-
-**To try, most promising first:**
-
-1. **Keep Ollama's model in memory.** Ollama unloads a model that has not been used for
-   five minutes, and the next question waits for it to load again. Set the user
-   environment variable `OLLAMA_KEEP_ALIVE` to `30m` and restart Ollama. (From Ollama's
-   documentation as remembered; not tried.)
+1. **How many processor threads Ollama uses.** Laptop A's processor has 2 fast cores
+   and 8 slow ones. Ollama chooses a number of threads by itself, and its documentation
+   does not say what it chooses on such a processor. Find out what is fastest:
 
    ```powershell
-   [Environment]::SetEnvironmentVariable("OLLAMA_KEEP_ALIVE", "30m", "User")
+   ollama run qwen2.5:7b --verbose
    ```
 
-2. **Rerank fewer candidates:** `retrieval.candidates: 15`. Reranking time is in
-   proportion to this number, and reranking is most of the search time. Cost: a
-   passage that the first search ranked 16th to 30th is no longer found. Check with
-   `python -m docqa.evaluate --retrieval-only` before and after, once
-   `eval/questions.csv` has rows. `CLAUDE.md` names 30, so this is the project owner's
-   decision; `tests/test_config.py` guards the value.
-3. **8-bit reranker:** `reranker.quantize: true`. Expect the reranker to run in roughly
-   half the time or less. Its scores change, so choose the threshold again
-   (`python -m docqa.evaluate --suggest-threshold`). Check first with
-   `pytest -m slow -k 8_bit -s`, which prints the times of both variants.
-4. **8-bit embedding model:** `embedding.quantize: true`. Shortens reading the question
-   and, much more, ingestion. The vectors change, so every document is embedded again
-   on the next ingest run, and the stored vectors and the question's must be made with
-   the same setting.
-5. **Fewer passages for the answer model:** `retrieval.top_k: 4`, or a smaller
-   `generation.evidence_char_budget`. Cost: less evidence. `CLAUDE.md` names 6.
-6. **Shorter answers:** `llm.max_tokens: 400`. Only matters when answers are long. An
-   answer that is cut off says so.
-7. **Shorter reranker input:** `reranker.max_length: 512`. The reranker then judges a
-   long passage by its first part only. `tests/test_config.py` guards against this on
-   purpose, so treat it as a last resort.
+   Paste a paragraph of text and ask for a summary. After the reply it prints
+   "prompt eval rate" (reading) and "eval rate" (writing), in tokens per second. Then
+   type `/set parameter num_thread 4`, ask again, and compare. Try 2, 4, 6, 8 and 10.
+   If one number is clearly best, make it permanent with a model of your own name that
+   differs from `qwen2.5:7b` only in that setting. Put these two lines in a file
+   called `Modelfile`:
+
+   ```
+   FROM qwen2.5:7b
+   PARAMETER num_thread 8
+   ```
+
+   ```powershell
+   ollama create qwen2.5-7b-threads -f Modelfile
+   ```
+
+   and name it in `config.local.yaml` (`llm: answer_model: qwen2.5-7b-threads`). It is
+   the same model file, so nothing is downloaded. Ollama's documentation gives a
+   Modelfile as the way to set such things for its OpenAI-compatible address, which
+   is the one this project uses.
+2. **Fewer candidates:** `retrieval.candidates: 10`. With the limit on ranking time
+   this only matters if the tracker shows that not all 15 are scored in 20 s.
+3. **More or less time for writing:** `generation.writing_reserve_s`. If answers are
+   never stopped, lower it and the model is given more to read. If they often are,
+   raise it, or lower `llm.max_tokens`.
+4. **8-bit embedding model:** `embedding.quantize: true`. It does little for a
+   question. It shortens ingestion: embedding was 384 s of the 404 s that bringing 15
+   documents up to date took. The vectors change, so every document is embedded again
+   once, and the stored vectors and the question's must be made with the same setting.
+5. **Shorter reranker input:** `reranker.max_length: 512`. The reranker then judges a
+   long passage by its first part only. `config.py` refuses a value below
+   `chunking.max_tokens` on purpose, so treat it as a last resort.
 
 For ingestion:
 
-1. `--no-figures` leaves the vision model out. Figures are indexed by their captions.
+1. Leave the box "Describe figures" unticked, or use `--no-figures`. Figures are then
+   indexed by their captions.
 2. `parsing.table_mode: fast` uses Docling's quicker table model. Tables with merged
    cells may come out worse.
 3. `embedding.quantize: true`, as above.
 4. `ingestion.group_files` sets how many files are read before the models change. A
    larger group means fewer model loads; a smaller one means results sooner.
 
-**What settings cannot do.** On a laptop processor a 7B model reads a prompt at some
-tens of tokens per second and writes a few tokens per second. An answer from three to
-six passages therefore takes minutes, whatever the settings. Answers in seconds need
-other hardware: a GPU server, which is the plan in `CLAUDE.md`, or a hosted endpoint.
+**What settings cannot do.** With a 7B model on this processor, two minutes means one
+or two passages of evidence. More evidence in the same time needs a faster model
+server. There are three ways, and each is the project owner's decision because
+`CLAUDE.md` fixes the stack:
+
+- **A smaller answer model.** A smaller model reads and writes faster, roughly in
+  proportion to its size, and follows the rules for citing less reliably. `llm.answer_model`
+  is the only setting. `CLAUDE.md` lists the models that may be used and excludes the
+  3B and 72B sizes of Qwen2.5 for their licences, so a new one needs its licence
+  checked and the owner's agreement, and then `python -m docqa.evaluate` on real
+  questions.
+- **A GPU server with vLLM,** which is the plan in `CLAUDE.md`.
+- **A hosted endpoint,** next section.
 
 ## Answers from a hosted endpoint
 
@@ -246,8 +363,9 @@ Before choosing one:
   training. Choose one that does neither.
 - The threshold does not change: the reranker still runs on the machine.
 
-What it would change, as an estimate: the answer model's 248 s would become seconds.
-The 81 s of search would stay, so the settings of the previous section still matter.
+What it would change, as an estimate: the answer model's share of an answer would
+become seconds, and the time limit would leave room for all the evidence. The search
+would stay as it is.
 
 A GPU server of your own with vLLM is the other route, and the one `CLAUDE.md` plans.
 It uses the same four settings, and nothing goes to a third party. vLLM serves one
@@ -257,30 +375,26 @@ model per server, which is what `vision_base_url` is for.
 
 `COPILOT_UPDATE.md` is this section as a task for GitHub Copilot.
 
-Stop the old chat screen first. Then get the code, in one of three ways:
+Stop the chat screen first. Then get the code, in one of three ways:
 
-**a. From the git bundle** (a single file, `docqa-update-2026-11-23.bundle`). It holds
-this release as a branch on top of the commit that Laptop A pushed to GitHub. In the
-project folder on Laptop A:
+**a. From the git bundle** (a single file, `docqa-update-2026-11-23b.bundle`). It holds
+this release as one commit on top of the last commit that Laptop A pushed to GitHub
+(`81bea90`, "Reduce retrieval and answer latency"). In the project folder on Laptop A:
 
 ```powershell
 git status
 ```
 
-Commit anything it lists, then:
+It should say `On branch speed-and-new-ui`. Commit anything it lists as changed, then:
 
 ```powershell
-git fetch "<path to>\docqa-update-2026-11-23.bundle" speed-and-new-ui:speed-and-new-ui
+git pull "<path to>\docqa-update-2026-11-23b.bundle" speed-and-new-ui
 ```
 
-```powershell
-git checkout speed-and-new-ui
-```
+**b. From GitHub**, if the branch has been pushed there from another machine:
+`git pull origin speed-and-new-ui`.
 
-**b. From GitHub**, if the branch has been pushed there: `git fetch origin`, then
-`git checkout speed-and-new-ui`.
-
-**c. From the zip** (`docqa-code-2026-11-23.zip`), if the project folder is not a git
+**c. From the zip** (`docqa-code-2026-11-23b.zip`), if the project folder is not a git
 repository. Do not extract it over the old folder. Extract it to a new folder, run
 `python scripts\compare_with_release.py "<old folder>"` there to see what the old copy
 changed, move `data\` and `models\` from the old folder to the new one, and activate
@@ -288,46 +402,56 @@ the old virtual environment.
 
 Then, whichever way was used:
 
-```powershell
-python -m pip install -r requirements.txt
+**Say where the documents are.** The documents on Laptop A are in a folder outside the
+project. Create `config.local.yaml` in the project folder with these two lines (forward
+slashes, and the quotes, are needed):
+
+```yaml
+paths:
+  docs_dir: "D:/EY Internship/docqa-docs-rbi-public-2026-11-20/docqa/docs"
 ```
+
+From then on `python -m docqa.ingest` needs no folder, and "+ Add" in the chat screen
+lists the PDFs of that folder that were never ingested. If `config.yaml` was edited on
+that laptop for other settings of its own, move those to this file too.
 
 ```powershell
 python -m pip install --no-deps -e .
 ```
 
-The first command installs the pinned versions of `starlette` and `uvicorn` if the
-environment has others. It downloads a few small packages at most.
-
 ```powershell
 python -m docqa.check_env
 ```
+
+It should pass all its checks and end with notes that name the documents folder (about
+600 PDFs) and the time limit.
 
 ```powershell
 pytest -m "not slow"
 ```
 
-460 should pass. Bring the ingested documents up to date, without starting on the PDFs
-that were never ingested:
+574 should pass. Then the real-model tests that are new, which also print the times
+that matter:
 
 ```powershell
-python -m docqa.ingest "D:\EY Internship\docqa-docs-rbi-public-2026-11-20\docqa\docs" --ingested-only
+pytest -m slow -k "run_directly or instructions_twice or time_limit or added_from_the_chat_screen" -s
 ```
 
-It should say that 15 documents are to be ingested and about 600 were left alone, and
-each figure line should say "cached". Then start the screen and ask the question that
-took 329 s:
+No document has to be ingested again. Start the screen:
 
 ```powershell
 python -m docqa.web --open
 ```
 
-Note the times under the answer, then follow "Making it faster". The real-model tests
-that are new in this release:
+Ask three questions and watch the tracker. The first answers are planned from an
+assumed reading speed and may run over two minutes; from the second one on, the speed
+measured on this laptop is used. Then:
 
 ```powershell
-pytest -m slow -k "without_ocr or 8_bit or chat_screen" -s
+python -m docqa.stats
 ```
+
+and follow "Making it faster". To add a document, use "+ Add" in the side panel.
 
 ## Setting up on a new machine
 
@@ -427,7 +551,7 @@ Every line should say PASS.
 pytest -m "not slow"
 ```
 
-460 should pass. Then the real-model tests, one group at a time, in this order:
+574 should pass. Then the real-model tests, one group at a time, in this order:
 
 ```powershell
 pytest -m slow -k "ollama or answer_model or vision"
@@ -465,6 +589,11 @@ Look at what came out before going further: `data/parsed/` (Docling's output),
 `data/figures/` (the crops), and the warnings the command prints. The last line says
 how long each of the three steps took.
 
+The same can be done from the chat screen (step 8): "+ Add" in its side panel lists
+the PDFs of the documents folder that were never ingested, and takes files dropped on
+it. If the documents are kept in a folder outside the project, name it in
+`config.local.yaml` first ("Updating the copy on Laptop A" shows how).
+
 ```powershell
 python -m docqa.ingest --list
 ```
@@ -495,13 +624,50 @@ python -m docqa.web --open
 ```
 
 It listens on this machine only, at http://127.0.0.1:8000. Stop it (Ctrl+C) before
-ingesting or evaluating again. All three use the same index, and Qdrant's local mode
-lets only one program open it.
+running `python -m docqa.ingest` or `python -m docqa.evaluate` in a terminal. All three
+use the same index, and Qdrant's local mode lets only one program open it. Documents
+can be added without stopping it, with "+ Add" in its side panel: that ingestion runs
+inside the screen's own program.
 
 ## Where it is most likely to need fixing
 
-In rough order of likelihood. Each item names the file to look at. Items 1 to 5 are
-new in release 2026-11-23, which has not met a real model.
+In rough order of likelihood. Each item names the file to look at.
+
+**New in release 2026-11-23b. None of it has met a real model.**
+
+a. **An answer that runs over the limit** (`generate/budget.py`, `Database.read_speed`
+   in `db.py`). The evidence is sized from the reading speed measured so far: the
+   characters of evidence of an answer divided by its wait for the first word, as a
+   median over the last 20 answers. If answers keep running over, compare "Reading" in
+   the tracker with what its line said to expect ("About 50 s on this computer"). A
+   large gap means the model was not in memory, or was reading its instructions again
+   (item c). `python -m docqa.stats` shows the speed that is used.
+b. **The search models run from the project's own loop** (`retrieve/reranker.py`,
+   `index/embedder.py`). If the library's functions are not where this release expects
+   them, the log says "run through the library's own call from now on" once and
+   everything works as before, only slower. The slow tests named `run_directly` compare
+   the numbers with the library's on the real models. Should they differ, set
+   `self.direct = False` in the two classes and report it.
+c. **The answer model reading its instructions only once** (`web/server.py`,
+   `AppState.warm_up`). This relies on Ollama keeping what it read of the previous
+   request. The slow test named `instructions_twice` checks it by timing. If it fails,
+   the first answer after a start is slower and nothing else is wrong.
+d. **Ingestion inside the chat screen** (`web/ingestion.py`). Before a run the search
+   models are dropped from memory and Ollama is left to swap the answer model for the
+   vision model; afterwards the search models are loaded again. Watch Task Manager
+   during the first run with figures. If memory runs short, untick "Describe figures".
+   Docling is loaded inside the screen's program for the first time here.
+e. **What is kept of an answer that was stopped** (`complete_part` in
+   `generate/budget.py`). It keeps the text up to the last complete reference. If
+   stopped answers end oddly, look there. If many answers are stopped, raise
+   `generation.writing_reserve_s` or lower `llm.max_tokens`.
+f. **The 8-bit reranker and the threshold.** Scores shift a little, and the threshold of
+   0.50 was never chosen from real questions. A question that is refused although its
+   passage is in the documents, or answered from an unrelated passage, points here:
+   write questions in `eval/questions.csv` and run
+   `python -m docqa.evaluate --suggest-threshold`.
+
+**From release 2026-11-23 and before.** Laptop A has run all of this once.
 
 1. **The short citations** (`generate/prompt.py`, `generate/citations.py`). The model is
    told to cite `[E1, p. 12]`. A 7B model may write titles instead, or leave the page
@@ -536,7 +702,7 @@ new in release 2026-11-23, which has not met a real model.
 9. **Chunk sizes with the real tokenizer** (`ingest/chunker.py`). 79 chunks from 15
    PDFs is about five per document, which is few. Look at the token counts once.
 10. **Near-duplicate documents.** The Master Directions exist once per type of bank. The
-    top six passages for a question may be six near-identical ones. The document title
+    top passages for a question may be near-identical ones. The document title
     is part of what is embedded, which should help; it has not been measured.
 
 ## Decisions taken while building
@@ -547,10 +713,12 @@ code could be written. Each is easy to change.
 | Question | What the code does | Where |
 |---|---|---|
 | Where titles, versions and dates come from | `manifest.csv` in the project root, one row per file. Built from the RBI index: 607 documents have their full title and date; the 11 others use their file name | `paths.manifest`, `ingest/documents.py` |
-| What identifies a document | Its path below `docs/`. An edited file replaces its chunks; a renamed file is a new document | `ingest/documents.py` |
+| What identifies a document | Its place below the documents folder (`paths.docs_dir`), whichever part of that folder is ingested. A file added from the chat screen is `uploads/<file>`. A file in a folder elsewhere is named by its place below that folder. An edited file replaces its chunks; a renamed file is a new document | `ingest/documents.py` |
 | Which page is cited | Chunks record where each later page begins, and the model is shown those places, so it can cite the page a fact is on | `Chunk.page_marks`, `generate/prompt.py` |
-| How the model names a source | By a label, `E1` to `E6`, with the page. The code replaces the label with the document's title | `generate/citations.py` |
-| Which passages the model gets | Of the six kept, those scoring at least half as well as the best, within the evidence budget | `generation.evidence_score_ratio`, `generation.evidence_char_budget` |
+| How the model names a source | By a label, `E1`, `E2` and so on, with the page. The code replaces the label with the document's title | `generate/citations.py` |
+| Which passages the model gets | Of those kept, those scoring at least half as well as the best, within the evidence budget and, with a time limit, within what the model can read in the time left | `generation.evidence_score_ratio`, `generation.evidence_char_budget`, `generate/budget.py` |
+| How long an answer may take | 120 s: the evidence is cut to fit, and the writing stops when the time is up, at the end of a complete statement. The reading is not interrupted | `generation.time_limit_s`, `generate/budget.py` |
+| How long ranking may take | 20 s: the candidates hybrid search placed highest are scored first, the rest are left out | `retrieval.rerank_time_limit_s`, `retrieve/__init__.py` |
 | What is embedded | The document title, then the headings above the chunk, then its text | `index.searchable_text` |
 | Scale of rerank scores | Normalised, 0 to 1. The threshold is on that scale | `reranker.normalize` |
 | When OCR runs | Only for a document that has a page with an image and almost no text | `parsing.ocr`, `ingest/parser.py` |
@@ -559,7 +727,9 @@ code could be written. Each is easy to change.
 | Real customer data | A file with 3 or more PAN-like or Aadhaar-like numbers is not ingested | `screening`, `ingest/screening.py` |
 | A table too long for the models | Never split. Search uses its first 1,024 tokens; the answer model gets as much as fits the evidence budget, marked as cut | `embedding.max_length`, `generation.evidence_char_budget` |
 | Table of contents | Not indexed | `ingest/elements.py` |
-| More than one question at a time | The second waits for the first. The models use the whole processor anyway | `web/server.py` |
+| More than one question at a time | The second waits for the first. The models use the whole processor anyway. A question also waits while documents are being ingested from the screen | `web/server.py` |
+| Adding documents | From the chat screen, into `data/uploads`, or by ticking files of the documents folder. One run at a time, inside the screen's program | `web/ingestion.py` |
+| Settings that differ on one machine | In `config.local.yaml`, laid over `config.yaml`, not in git | `config.py` |
 | The chat screen | A page of plain HTML, CSS and JavaScript served by Starlette and uvicorn on this machine. It loads nothing from the internet | `web/` |
 
 Still open:

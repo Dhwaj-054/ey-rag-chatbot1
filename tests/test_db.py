@@ -137,3 +137,15 @@ def test_the_database_can_be_used_from_several_threads(tmp_path):
     assert errors == []
     assert len(database.list_documents()) == 8
     assert len(database.recent_queries(50)) == 8
+
+
+def test_a_document_can_be_found_by_the_content_of_its_file(tmp_path):
+    """How the chat screen notices that an uploaded PDF is ingested already."""
+    database = Database(tmp_path / "docqa.sqlite")
+    database.save_document(record("doc1", sha256="a" * 64, source_path="Circulars/a.pdf"))
+    database.save_document(record("doc2", sha256="b" * 64, source_path="b.pdf"))
+    database.save_document(record("doc3", sha256="b" * 64, source_path="a copy of b.pdf"))
+
+    assert database.find_document_by_hash("a" * 64).doc_id == "doc1"
+    assert database.find_document_by_hash("b" * 64).source_path == "a copy of b.pdf"  # the first by path
+    assert database.find_document_by_hash("c" * 64) is None

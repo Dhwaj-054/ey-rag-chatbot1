@@ -45,6 +45,7 @@ from docqa import resources
 from docqa.config import Config, ConfigError, load_config
 from docqa.db import Database
 from docqa.generate import answer
+from docqa.generate.budget import plan_answer
 from docqa.generate.prompt import PROMPT_VERSION
 from docqa.index.embedder import Embedder, EmbeddingError
 from docqa.index.store import ChunkStore, StoreError
@@ -237,7 +238,14 @@ def evaluate(
                 continue
 
             retrieval = retrieve(question.question, config, **models)
-            reply = answer(question.question, retrieval, llm, config)
+            # As the chat screen does it: the evidence is cut to what the answer model can
+            # read within generation.time_limit_s, at the speed measured on this machine.
+            plan = plan_answer(
+                config,
+                used_s=retrieval.elapsed_s,
+                read_chars_per_s=db.read_speed(config.llm.answer_model),
+            )
+            reply = answer(question.question, retrieval, llm, config, plan=plan)
             by_id = {source.chunk.chunk_id: source.chunk for source in reply.sources}
             answered = not reply.refused
             results.append(
@@ -398,9 +406,12 @@ def _summary_markdown(
         f"- Questions: {len(results)}",
         f"- Answer model: {config.llm.answer_model} (prompt version {PROMPT_VERSION})",
         f"- Embedding model: {config.embedding.model}",
-        f"- Reranker: {config.reranker.model} (normalised scores: {config.reranker.normalize})",
-        f"- Candidates: {config.retrieval.candidates}, kept: {config.retrieval.top_k}",
+        f"- Reranker: {config.reranker.model} (normalised scores: {config.reranker.normalize}, "
+        f"8-bit weights: {config.reranker.quantize})",
+        f"- Candidates: {config.retrieval.candidates}, kept: {config.retrieval.top_k}, "
+        f"ranking time limit: {_limit(config.retrieval.rerank_time_limit_s)}",
         f"- Rerank threshold: {config.retrieval.rerank_score_threshold}",
+        *_time_limit_lines(results, config, retrieval_only),
         "",
         "Each cell is `passed/counted`. A question is counted only where the measure "
         "applies to it: `-` means it applied to none.",
@@ -420,6 +431,22 @@ def _summary_markdown(
         "",
     ]
     return "\n".join(lines)
+
+
+def _limit(seconds: float | None) -> str:
+    return "none" if seconds is None else f"{seconds:g} s"
+
+
+def _time_limit_lines(results: Sequence[QuestionResult], config: Config, retrieval_only: bool) -> list[str]:
+    """The time limit for an answer, and how many answers of this run took longer."""
+    limit = config.generation.time_limit_s
+    if retrieval_only or limit is None:
+        return [f"- Time limit for an answer: {_limit(limit)}"]
+    answered = [result for result in results if result.refused is False]
+    over = sum(result.latency_s > limit for result in answered)
+    return [
+        f"- Time limit for an answer: {_limit(limit)}. {over} of {len(answered)} answer(s) took longer."
+    ]
 
 
 def _suggestion_lines(suggestion: ThresholdSuggestion) -> list[str]:

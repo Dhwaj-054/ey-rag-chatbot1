@@ -600,3 +600,29 @@ def test_client_can_be_used_as_a_context_manager():
         assert client.vision_model == "vision-model"
         client.chat(QUESTION)
     client.close()  # a second close is harmless
+
+
+def test_a_stream_that_is_stopped_early_says_what_had_arrived():
+    """An answer stopped at its time limit keeps the words the model had written by then."""
+    client, _ = make_client(sse_reply(chunk("The fee "), chunk("is 0.50%"), chunk(" of the amount."), DONE_LINE))
+    stream = client.chat_stream(QUESTION)
+    assert stream.so_far().text == ""  # nothing has been asked for yet
+
+    pieces = iter(stream)
+    next(pieces)
+    next(pieces)
+    stream.close()
+    partial = stream.so_far()
+
+    assert partial.text == "The fee is 0.50%"
+    assert partial.finish_reason is None
+    assert (partial.prompt_tokens, partial.completion_tokens) == (None, None)  # sent only with the end
+    assert partial.latency_s >= 0
+
+
+def test_a_stream_read_to_its_end_gives_the_same_reply_either_way():
+    client, _ = make_client(sse_reply(chunk("Hel"), chunk("lo"), DONE_LINE))
+    stream = client.chat_stream(QUESTION)
+
+    assert list(stream) == ["Hel", "lo"]
+    assert stream.so_far() is stream.result

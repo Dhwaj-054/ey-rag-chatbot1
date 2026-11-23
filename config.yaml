@@ -8,9 +8,22 @@
 #
 # Settings marked SPEED trade time against something else. HANDOVER.md, section
 # "Making it faster", says what each one costs.
+#
+# A setting that differs on one machine does not belong in this file. Put it in
+# config.local.yaml next to it, in the same layout, with only the keys that differ:
+#
+#     paths:
+#       docs_dir: "D:/somewhere/docs"
+#
+# That file is laid over this one when the settings are loaded. It is not in git, so
+# it survives an update of the project.
 
 paths:
-  docs_dir: docs                        # sample documents (input, never modified)
+  # The documents. Input, never modified. If they are kept somewhere else on this
+  # machine, name that folder in config.local.yaml.
+  docs_dir: docs
+  # PDFs added through the chat screen ("Add documents") are kept here.
+  uploads_dir: data/uploads
   data_dir: data                        # everything generated; git-ignored
   parsed_dir: data/parsed               # parsed documents as JSON (parse cache)
   figures_dir: data/figures             # cropped figure images
@@ -55,8 +68,12 @@ ui:
   # from the network by accident.
   allow_network: false
   # SPEED. true: the search models and the answer model are loaded when the screen
-  # starts, in the background, so the first question does not wait for them.
+  # starts, in the background, so the first question does not wait for them. The
+  # answer model is also given its instructions then, so that it does not have to
+  # read them again with the first question.
   warm_up: true
+  # The largest PDF that "Add documents" accepts, in megabytes. Starting value.
+  max_upload_mb: 200
 
 parsing:
   # Folder that holds Docling's own models (layout, tables, OCR). Fill it once with
@@ -125,10 +142,16 @@ embedding:
 reranker:
   model: BAAI/bge-reranker-v2-m3        # a local folder also works
   use_fp16: false                       # must stay false on CPU
-  # SPEED. As embedding.quantize. Scores shift slightly, so choose the threshold
-  # again after changing it. NOT TRIED with the real model yet.
-  quantize: false
-  batch_size: 4                         # starting value
+  # SPEED. true: the reranker's weights are held as 8-bit numbers. On the laptop that
+  # runs the models its test ranked 12 short passages in 1.5 s instead of 3.1 s, and
+  # the answering passage still came first. Switched on with release 2026-11-23b to
+  # bring an answer under two minutes. Scores shift slightly, so choose the threshold
+  # again (python -m docqa.evaluate --suggest-threshold). How much it changes which
+  # passages are found on real questions HAS NOT BEEN MEASURED. false: full precision.
+  quantize: true
+  # Passages scored in one go. They are sorted by length first, so that a batch holds
+  # passages of similar length. Starting value.
+  batch_size: 4
   max_length: 1024                      # starting value: question plus chunk, in tokens
   # true: scores are mapped to 0..1. retrieval.rerank_score_threshold is on this scale.
   normalize: true
@@ -151,6 +174,11 @@ retrieval:
   candidates: 15                        # taken from hybrid search, before reranking
   top_k: 4                              # kept after reranking
   rrf_k: 60                             # starting value: usual reciprocal rank fusion constant
+  # SPEED. Ranking stops after this many seconds and goes on with the candidates it
+  # has scored by then. Those that hybrid search placed highest are scored first, so
+  # what is left out is what it placed lowest. The answer's tracker says when this
+  # happened. null: every candidate is scored, however long it takes. Starting value.
+  rerank_time_limit_s: 20
   # Below this best rerank score the chatbot replies with not_found_message and the
   # answer model is not called. CLAUDE.md gives no number: a sensible one depends on
   # the documents. 0.50 is a temporary starting value, set on the laptop that runs the
@@ -172,3 +200,26 @@ generation:
   # is at least this share of the best passage's score. The best passage always is.
   # 0 gives the model every retrieved passage. Starting value.
   evidence_score_ratio: 0.5
+  # SPEED. The longest an answer should take, in seconds, from the question to its
+  # last word. null: no limit. With a limit, two things happen (src/docqa/generate/
+  # budget.py):
+  #   1. After the search, the evidence is cut to what the answer model can read in
+  #      the time that is left, less writing_reserve_s. Its reading speed is measured
+  #      on this machine from the answers already given (python -m docqa.stats).
+  #   2. When the time is up the answer stops at the end of its last complete
+  #      statement and says that it was stopped.
+  # The reading itself is never interrupted. So the limit holds when the measured
+  # speed holds; the first answers on a machine, before anything is measured, can
+  # run over it. 120 was asked for on 2026-11-23.
+  time_limit_s: 120
+  # Of time_limit_s, the seconds kept for writing. An answer always gets at least
+  # this long to be written, also when the reading took longer than planned.
+  # Starting value: about 150 tokens at 4 to 5 tokens per second.
+  writing_reserve_s: 35
+  # The evidence is never cut below this many characters to fit the limit: less
+  # than one passage is rarely enough to answer from. Starting value.
+  min_evidence_chars: 1500
+  # How fast the answer model reads, in characters of evidence per second, assumed
+  # until this machine has answered a question. From then on the measured speed is
+  # used. A cautious starting value for a 7B model on a laptop processor.
+  read_chars_per_s: 45

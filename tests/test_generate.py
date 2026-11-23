@@ -380,7 +380,9 @@ def test_the_answer_shows_full_citations_although_the_model_wrote_short_labels(t
 
     request = llm.requests[0]
     assert request["model"] == "qwen2.5:7b"
-    assert request["stream"] is False
+    # Always read piece by piece, also when nobody is shown the pieces: that is how the
+    # wait for the first word is measured and how an answer can be stopped at the time limit.
+    assert request["stream"] is True
     assert request["temperature"] == 0.0
     assert request["messages"] == build_messages("What is the processing fee on a home loan?", SOURCES, tmp_cfg)
 
@@ -547,6 +549,15 @@ def test_every_answer_is_logged_with_its_chunks_scores_models_and_times(tmp_cfg)
     assert oldest.citations == [
         {"doc_title": "Example Bank Lending Policy", "page": 12, "chunk_id": "fees:00003"}
     ]
-    assert oldest.timings["retrieval"] == {"embed_s": 0.2, "search_s": 0.1, "rerank_s": 1.2, "candidates": 30}
+    assert oldest.timings["retrieval"] == {
+        "embed_s": 0.2,
+        "search_s": 0.1,
+        "rerank_s": 1.2,
+        "candidates": 30,
+        "candidates_found": 0,
+    }
     assert oldest.timings["completion_tokens"] == 20 and oldest.timings["evidence_chars"] > 0
+    # What the reading speed is measured from, and the limit the answer was planned for.
+    assert oldest.timings["first_token_s"] is not None
+    assert oldest.timings["time_limit_s"] == 120 and oldest.timings["stopped_at_limit"] is False
     assert (newest.refused, newest.answer, newest.answer_model, newest.retrieved) == (True, NOT_FOUND, None, [])

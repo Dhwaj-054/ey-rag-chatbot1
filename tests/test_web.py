@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 import threading
+import time
 from datetime import date
 
 import pytest
@@ -17,11 +18,15 @@ from starlette.testclient import TestClient
 
 from docqa.config import ConfigError
 from docqa.db import Database, DocumentRecord, utc_now
+from docqa.generate import build_messages
 from docqa.index import index_chunks
 from docqa.index.store import ChunkStore, StoreError
 from docqa.schema import ElementType, RetrievalResult, RetrievalTimings, ScoredChunk
-from docqa.web import server
+from docqa.tokens import WordCounter
+from docqa.web import ingestion, server
+from docqa.web.ingestion import IngestJob, safe_pdf_name
 from docqa.web.server import STATIC_DIR, AppState, Cancelled, create_app
+from tests.docling_samples import lending_policy, with_identifiers
 from tests.fakes import FakeEmbedder, FakeReranker, ScriptedLLM, make_chunk
 
 NOT_FOUND = "I could not find this in the documents."
@@ -73,6 +78,16 @@ def events(response) -> list[tuple[str, dict]]:
         if name:
             found.append((name, data))
     return found
+
+
+def one(stream: list[tuple[str, dict]], wanted: str) -> dict:
+    """The data of the first event called ``wanted``."""
+    return next(data for name, data in stream if name == wanted)
+
+
+def steps(stream: list[tuple[str, dict]]) -> list[tuple[str, str]]:
+    """The steps of an answer in the order the page was told about them."""
+    return [(data["name"], data["state"]) for name, data in stream if name == "step"]
 
 
 def fill(config) -> None:
@@ -141,6 +156,9 @@ def test_status_says_ready_when_everything_is_in_place(ready):
     assert status["settings"]["answer_model"] == "qwen2.5:7b"
     assert status["settings"]["answer_model_host"] is None  # on this machine
     assert status["settings"]["candidates"] == 15
+    assert status["settings"]["time_limit_s"] == 120
+    assert status["settings"]["reranker_8_bit"] is True
+    assert status["ingesting"] is False
 
 
 def test_status_says_when_the_answer_model_is_on_another_machine(temp_config, monkeypatch):
@@ -259,11 +277,34 @@ def test_a_question_is_answered_as_a_stream_of_steps(ready):
     assert response.headers["content-type"].startswith("text/event-stream")
     stream = events(response)
     names = [name for name, _ in stream]
-    assert names[0] == "status" and names[1] == "retrieval"
+    assert names[0] == "start" and stream[0][1] == {"time_limit_s": config.generation.time_limit_s}
     assert names[-2:] == ["answer", "done"]
-    assert set(names[2:-2]) == {"token"}
+    assert set(names[1:-2]) == {"step", "retrieval", "token"}
+    # Every step is announced when it starts and when it ends, in the order it happens.
+    assert steps(stream) == [
+        ("question", "start"),
+        ("question", "end"),
+        ("database", "start"),
+        ("database", "end"),
+        ("ranking", "start"),
+        ("ranking", "progress"),
+        ("ranking", "end"),
+        ("reading", "start"),
+        ("reading", "end"),
+        ("writing", "start"),
+        ("writing", "end"),
+    ]
+    # The passages reach the page after the ranking and before the model starts reading.
+    order = [name if name != "step" else f"{data['name']} {data['state']}" for name, data in stream]
+    assert order.index("ranking end") < order.index("retrieval") < order.index("reading start")
+    assert order.index("writing start") < order.index("token")
+    ranking = [data for name, data in stream if name == "step" and data["name"] == "ranking"]
+    assert ranking[0]["of"] == 3 and ranking[1]["done"] == 3 and ranking[2]["took_s"] >= 0
+    reading = next(data for name, data in stream if name == "step" and data["name"] == "reading")
+    assert reading["passages"] >= 1 and reading["chars"] > 50 and reading["expected_s"] > 0
 
-    retrieval = stream[1][1]
+    retrieval = one(stream, "retrieval")
+    assert retrieval["plan"]["time_limit_s"] == 120 and retrieval["plan"]["speed_measured"] is False
     assert retrieval["found"] is True and retrieval["threshold"] == config.retrieval.rerank_score_threshold
     assert retrieval["timings"]["candidates"] == 3
     first = retrieval["sources"][0]
@@ -308,7 +349,7 @@ def test_sources_say_which_passages_went_to_the_model(ready):
 
     stream = events(client.post("/api/ask", json={"question": "What is the processing fee on a home loan?"}))
 
-    sources = stream[1][1]["sources"]
+    sources = one(stream, "retrieval")["sources"]
     given = [source["chunk_id"] for source in sources if source["given_to_model"]]
     assert given and given[0] == "fees:00000"
     assert stream[-2][1]["evidence_ids"] == given
@@ -322,8 +363,9 @@ def test_a_question_the_documents_cannot_answer_is_refused_without_the_model(rea
 
     stream = events(client.post("/api/ask", json={"question": "Which planets have rings?"}))
 
-    retrieval, final = stream[1][1], stream[-2][1]
+    retrieval, final = one(stream, "retrieval"), stream[-2][1]
     assert retrieval["found"] is False
+    assert not [name for name, _state in steps(stream) if name in ("reading", "writing")]  # no model, no such steps
     assert all(source["given_to_model"] is False for source in retrieval["sources"])
     assert final["refused"] is True and final["text"] == NOT_FOUND
     assert final["answer_model"] is None and final["citations"] == []
@@ -335,7 +377,7 @@ def test_a_figure_source_carries_an_address_for_its_picture(ready):
     client, _llm, config = ready
 
     stream = events(client.post("/api/ask", json={"question": "home loan processing fee waiver process"}))
-    figure = next(source for source in stream[1][1]["sources"] if source["type"] == "figure")
+    figure = next(source for source in one(stream, "retrieval")["sources"] if source["type"] == "figure")
 
     assert figure["image_url"] == f"/api/figure/{FIGURE_DOC}/p0007-f001.png"
     assert figure["model_generated"] is True
@@ -440,19 +482,25 @@ def test_a_second_question_waits_for_the_first(ready):
 
     worker = threading.Thread(
         target=server._answer_question,
-        args=(state, "What is the processing fee on a home loan?", lambda event, data: seen.append((event, data.get("stage"))), threading.Event()),
+        args=(
+            state,
+            "What is the processing fee on a home loan?",
+            lambda event, data: seen.append((event, data.get("name"), data.get("state"), data.get("reason"))),
+            threading.Event(),
+        ),
+        daemon=True,  # a failure below must not leave the test run waiting for this thread
     )
     worker.start()
     for _ in range(200):
         if seen:
             break
         threading.Event().wait(0.01)
-    assert seen == [("status", "waiting")]
+    assert seen == [("step", "waiting", "start", "question")]
 
     state.busy.release()
     worker.join(timeout=30)
     assert not worker.is_alive()
-    assert [event for event, _ in seen][:2] == ["status", "status"] and seen[1] == ("status", "searching")
+    assert seen[1] == ("step", "waiting", "end", None) and seen[2][0] == "start"
     assert seen[-1][0] == "answer"
 
 
@@ -468,6 +516,10 @@ def test_warming_up_loads_the_models_and_wakes_the_answer_model(tmp_cfg, monkeyp
     assert state.models["state"] == "ready"
     assert state.models["seconds"]["embedder"] == 20.0 and "answer_model" in state.models["seconds"]
     assert llm.requests[0]["max_tokens"] == 1
+    # The model is woken with the instructions of a real question in front, so that it
+    # has read them already when the first question comes.
+    wake, question = llm.requests[0]["messages"], build_messages("Any question?", [], tmp_cfg)
+    assert wake[0] == question[0] and wake[0]["role"] == "system"
 
 
 def test_a_model_that_cannot_be_loaded_is_shown_not_raised(tmp_cfg, monkeypatch):

@@ -123,6 +123,33 @@ def remote_notes(config: Config) -> list[str]:
     return notes
 
 
+def setup_notes(config: Config) -> list[str]:
+    """Things about this machine's settings that are worth knowing and are not failures."""
+    notes = []
+    if config.local_file is not None:
+        notes.append(
+            f"settings of this machine are taken from {config.local_file.name}, which is laid "
+            f"over config.yaml."
+        )
+    docs = config.paths.docs_dir
+    pdfs = sum(1 for item in docs.rglob("*") if item.suffix.lower() == ".pdf") if docs.is_dir() else 0
+    if pdfs:
+        notes.append(f"the documents folder holds {pdfs} PDF file(s): {docs}")
+    else:
+        notes.append(
+            f"the documents folder holds no PDF files: {docs}. If the documents are kept "
+            f"somewhere else on this machine, name that folder in config.local.yaml:\n"
+            f"    paths:\n      docs_dir: \"D:/where/the/documents/are\""
+        )
+    limit = config.generation.time_limit_s
+    if limit is not None:
+        notes.append(
+            f"an answer is planned to take at most {limit:g} s (generation.time_limit_s). "
+            f"'python -m docqa.stats' shows whether the answers given so far kept to it."
+        )
+    return notes
+
+
 def _check_llm_server(
     settings: LLMConfig, wanted: Sequence[tuple[str, str]], client: LLMClient | None
 ) -> list[CheckResult]:
@@ -282,7 +309,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         report(check_local_models(config))
         report([check_docling_models(config)])
         report([check_qdrant(config)])
-        for note in remote_notes(config):
+        for note in (*remote_notes(config), *setup_notes(config)):
             print(f"\nNote: {note}")
         if config.retrieval.rerank_score_threshold is None:
             print(

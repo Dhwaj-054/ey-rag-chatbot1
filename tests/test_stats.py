@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
 
 import pytest
@@ -190,3 +191,23 @@ def test_command_line_prints_the_figures(tmp_cfg, capsys):
 
     output = capsys.readouterr().out
     assert "documents:           1" in output and "Questions" in output
+
+
+def test_the_figures_behind_the_time_limit_are_reported_too(tmp_cfg):
+    """Ranking time, the answer model's reading speed, and answers stopped at the limit."""
+    db = Database(tmp_cfg.paths.sqlite_path)
+    for chars, waited, stopped in ((3000, 60.0, False), (3600, 60.0, True), (2000, 25.0, False)):
+        answer = logged_answer(100, rerank=18.0, first_token=waited, generation=waited + 20, tokens=100)
+        timings = replace(answer.timings, evidence_chars=chars, time_limit_s=120.0, stopped_at_limit=stopped)
+        db.log_answer(replace(answer, timings=timings), "e", "r")
+
+    stats = db.query_stats()
+    lines = describe(IndexStats(), stats)
+
+    assert stats.median_rerank_s == 18.0
+    assert stats.median_read_chars_per_s == pytest.approx(60.0)  # 50, 60 and 80 characters a second
+    assert stats.stopped_at_limit == 1
+    assert "  of which ranking:    18 s" in lines
+    assert "  median reading speed: 60 characters per second" in lines
+    assert "  stopped at the time limit: 1" in lines
+    assert "  median reading speed: no data yet" in describe(IndexStats(), QueryStats())
