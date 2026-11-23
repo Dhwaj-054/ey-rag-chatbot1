@@ -368,6 +368,22 @@ def test_documents_already_ingested_can_be_brought_up_to_date_alone(bench, conve
     assert bench.db.get_document(doc_id_for("b.pdf")) is None
 
 
+def test_ingested_only_matches_files_from_an_external_docs_folder(
+    bench, conversions, tmp_path
+):
+    bench.add("Circulars/a.pdf", b"a")
+    bench.run(describe_figures=False)
+
+    external = tmp_path / "external-docs"
+    external_file = external / "Circulars" / "a.pdf"
+    external_file.parent.mkdir(parents=True)
+    external_file.write_bytes(b"a")
+
+    report = bench.run(path=external, describe_figures=False, known_only=True)
+
+    assert (report.files_seen, report.files_skipped, report.files_ingested) == (1, 1, 0)
+
+
 def test_a_large_run_stops_and_asks_first(temp_config, conversions):
     def ask_above_two(raw):
         raw["ingestion"]["confirm_above_files"] = 2

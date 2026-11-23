@@ -49,6 +49,34 @@ Inspected on 2026-11-20 on this laptop. Everything below was observed by running
 command. Sections below from older inspections are legacy facts and must not be assumed
 for this machine unless repeated here.
 
+#### Re-inspected for release 2026-11-23
+
+Inspected on 2026-11-23 by GitHub Copilot. The observations below replace the matching
+values in the 2026-11-20 profile only where they were verified by commands.
+
+- Python 3.13.3 (64-bit), pip 26.0.1.
+- Ollama 0.40.17 is installed and on `PATH`. It lists `qwen2.5:7b` (4.7 GB) and
+  `qwen2.5vl:7b` (6.0 GB).
+- Hugging Face cache entries are present for `BAAI/bge-m3` and
+  `BAAI/bge-reranker-v2-m3`.
+- Docling model files are present under `models/docling` for the layout and
+  layout-ONNX models, the general Docling model set and RapidOCR.
+- D: has about 194 GB free (208,514,347,008 bytes of 251,604,758,528 bytes).
+- The project is on branch `speed-and-new-ui` at commit
+  `4b4d772b1cbc4cf45d26346399996c0c5d087a6b`.
+- `python -m docqa.check_env` passed all 24 checks after stopping the old Streamlit
+  processes that held Qdrant open.
+- `python -m docqa.stats` reports 15 documents, 70 pages and 79 passages (64 text,
+  12 tables and 3 figures). It also reports 3 earlier questions, with a median total
+  time of 354 seconds.
+- The 2026-11-23 `--ingested-only` refresh found 608 PDFs under the external docs
+  folder, matched 15 registered documents, and left 593 never-ingested PDFs alone.
+  The refresh took 404 seconds: 3 seconds reading, 384 seconds embedding and storing,
+  and 17 seconds on the remaining steps. Three cached figures were skipped.
+- The 2026-11-23 focused real-model tests passed all 4 selected tests in 181 seconds.
+  The 8-bit benchmark took 1.2 seconds for embedding 12 texts (1.8 seconds full),
+  and 1.5 seconds for reranking 12 passages (3.1 seconds full).
+
 #### Current Summary
 
 - Intel Core i5-1335U, 10 physical cores / 12 logical processors, 15.7 GB RAM.

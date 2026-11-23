@@ -160,10 +160,14 @@ class Manifest:
 
 
 def document_info(
-    path: Path, config: Config, manifest: Manifest, sha256: str | None = None
+    path: Path,
+    config: Config,
+    manifest: Manifest,
+    sha256: str | None = None,
+    source_root: Path | None = None,
 ) -> DocumentInfo:
     """Build the record for one file: its identity, its hash and its metadata."""
-    source_path = source_path_for(path, config.paths.docs_dir)
+    source_path = source_path_for(path, source_root or config.paths.docs_dir)
     entry = manifest.lookup(source_path) or ManifestEntry()
     return DocumentInfo(
         doc_id=doc_id_for(source_path),

@@ -191,15 +191,17 @@ def ingest_path(
     db = db or resources.get_database(config)
     manifest = Manifest.load(config.paths.manifest)
     files = find_documents(path)
+    source_root = path.resolve() if path.is_dir() else path.parent.resolve()
 
     work: list[_Work] = []
     skipped = left_alone = 0
     for file in files:
-        if known_only and db.get_document(doc_id_for(source_path_for(file, config.paths.docs_dir))) is None:
+        source_path = source_path_for(file, source_root)
+        if known_only and db.get_document(doc_id_for(source_path)) is None:
             left_alone += 1  # not even hashed: a large folder of new files costs nothing
             continue
         sha256 = file_sha256(file)
-        info = document_info(file, config, manifest, sha256)
+        info = document_info(file, config, manifest, sha256, source_root)
         mark = fingerprint(info, config, describe)
         record = db.get_document(info.doc_id)
         if record is None:
