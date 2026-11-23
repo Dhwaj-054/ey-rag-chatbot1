@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "docqa"
+version = "0.1.0"
+description = "Local document Q&A prototype for BFSI documents (multimodal RAG)"
+requires-python = ">=3.11"
+# Runtime dependencies are deliberately not listed here. They are pinned in
+# requirements.txt so that there is one place to change a version.
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The project folder is put on the import path so that tests can share tests/fakes.py.
+pythonpath = ["."]
+addopts = "-ra"
+markers = [
+    "slow: needs real models (Ollama or downloaded weights); deselect with -m \"not slow\"",
+]

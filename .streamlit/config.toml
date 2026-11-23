@@ -1,0 +1,12 @@
+# Streamlit settings for this project. They apply when Streamlit is started from this
+# folder.
+
+[server]
+# Listen on this machine only. By default Streamlit serves the app to the whole
+# network, and when started headless it also looks up the machine's public IP address
+# through an online service. Setting the address stops both.
+address = "localhost"
+
+[browser]
+# Do not send usage statistics to Streamlit: nothing leaves the machine.
+gatherUsageStats = false

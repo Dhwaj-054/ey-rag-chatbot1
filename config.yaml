@@ -1,0 +1,114 @@
+# Settings for the document Q&A prototype.
+#
+# Every model name, path, size and threshold lives here. Nothing in src/ hard-codes
+# one. Relative paths are resolved against the folder that holds this file.
+#
+# Values come from CLAUDE.md unless a comment says "starting value": those are
+# defaults chosen while the code was written and are open to change.
+
+paths:
+  docs_dir: docs                        # sample documents (input, never modified)
+  data_dir: data                        # everything generated; git-ignored
+  parsed_dir: data/parsed               # parsed documents as JSON (parse cache)
+  figures_dir: data/figures             # cropped figure images
+  sqlite_path: data/docqa.sqlite        # document register, description cache, query log
+  # Optional. One row per document: file, doc_title, version, effective_date,
+  # access_group. A document that is not listed gets its file name as its title.
+  manifest: manifest.csv
+  eval_questions: eval/questions.csv
+  eval_results_dir: eval/results
+
+llm:
+  # An OpenAI-compatible endpoint. Ollama today. Moving to a vLLM server later means
+  # changing base_url (and allow_remote) here, nothing else.
+  base_url: http://localhost:11434/v1
+  # Addresses that are not this machine are refused unless this is true.
+  allow_remote: false
+  # Name of an environment variable that holds an API key. Ollama needs none.
+  api_key_env: null
+  answer_model: qwen2.5:7b
+  vision_model: qwen2.5vl:7b            # figures and flowcharts, ingestion only
+  temperature: 0.0                      # starting value
+  max_tokens: 1024                      # starting value: longest reply, in tokens
+  connect_timeout_s: 10                 # starting value
+  request_timeout_s: 600                # starting value: CPU answers can take minutes
+  # Not settable from here: the context window. Ollama defaults to 4,096 tokens and
+  # its OpenAI-compatible endpoint cannot change that per request. Raise it in Ollama
+  # (OLLAMA_CONTEXT_LENGTH=8192 or more) before asking real questions. See HANDOVER.md.
+
+parsing:
+  # Folder that holds Docling's own models (layout, tables, OCR). Fill it once with
+  #   docling-tools models download layout tableformer rapidocr -o models/docling
+  # The folder is git-ignored. null: Docling looks in its own cache, and tries to
+  # download what is missing, which this project's offline setting stops.
+  artifacts_path: models/docling
+  ocr: true                             # read scanned pages and regions with no text layer
+  ocr_languages: []                     # empty: the OCR engine's own default
+  images_scale: 2.0                     # starting value: figure crops at 144 dpi (1.0 is 72 dpi)
+  table_mode: accurate                  # accurate or fast (Docling's TableFormer)
+  num_threads: 4                        # starting value: CPU threads Docling may use
+
+figures:
+  # false: figures are still cropped and saved, but the vision model is not called.
+  describe: true
+  # Pictures that cover less of the page than this are skipped (logos, stamps,
+  # signatures). Starting value.
+  min_page_fraction: 0.02
+
+screening:
+  # CLAUDE.md: a file that looks like it holds real customer data stops ingestion.
+  enabled: true
+  # A file with at least this many PAN-like or Aadhaar-like numbers is not ingested.
+  # Starting value: a regulation may quote one or two as examples of the format.
+  flag_at: 3
+
+ingestion:
+  # A run that would process more files than this stops and asks for --yes.
+  # Parsing is slow on a CPU. Starting value.
+  confirm_above_files: 25
+
+embedding:
+  model: BAAI/bge-m3                    # dense and sparse vectors; a local folder also works
+  use_fp16: false                       # must stay false on CPU
+  batch_size: 4                         # starting value: keep batches small on CPU
+  # Longest input in tokens. The library's own default is 512, which would cut chunks
+  # of up to 800 tokens without a warning. Starting value.
+  max_length: 1024
+
+reranker:
+  model: BAAI/bge-reranker-v2-m3        # a local folder also works
+  use_fp16: false                       # must stay false on CPU
+  batch_size: 4                         # starting value
+  max_length: 1024                      # starting value: question plus chunk, in tokens
+  # true: scores are mapped to 0..1. retrieval.rerank_score_threshold is on this scale.
+  normalize: true
+
+qdrant:
+  # Local mode: QdrantClient(path=...). For a Qdrant server later, set url and
+  # set path to null. Exactly one of the two must be set.
+  path: data/qdrant
+  url: null
+  collection: docqa_chunks              # starting value
+
+chunking:
+  min_tokens: 400
+  max_tokens: 800
+  overlap_min_tokens: 50
+  overlap_max_tokens: 100
+
+retrieval:
+  candidates: 30                        # taken from hybrid search, before reranking
+  top_k: 6                              # kept after reranking
+  rrf_k: 60                             # starting value: usual reciprocal rank fusion constant
+  # Temporary starting value for the first indexed documents. Recalibrate with
+  # "python -m docqa.evaluate --suggest-threshold" after adding eval questions.
+  rerank_score_threshold: 0.50
+  default_access_group: all
+
+generation:
+  not_found_message: "I could not find this in the documents."
+  # Most evidence text, in characters, sent to the answer model with one question.
+  # Evidence beyond it is cut and marked as cut. 20,000 characters is roughly 5,000 to
+  # 6,500 tokens, which leaves room for the instructions and the reply in an
+  # 8,192-token context window. Starting value.
+  evidence_char_budget: 20000

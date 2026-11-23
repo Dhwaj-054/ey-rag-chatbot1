@@ -1,0 +1,252 @@
+"""Tests for the config loader."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+from pydantic import ValidationError
+
+from docqa.config import CONFIG_ENV_VAR, ConfigError, find_config_file, load_config
+
+
+@pytest.fixture(autouse=True)
+def _no_config_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests must not be steered by a DOCQA_CONFIG left in the developer's shell."""
+    monkeypatch.delenv(CONFIG_ENV_VAR, raising=False)
+
+
+# -- the project's own config.yaml ----------------------------------------------------
+
+
+def test_project_config_holds_the_values_decided_in_claude_md(config):
+    """If one of these is changed on purpose, change CLAUDE.md and this test with it."""
+    assert config.llm.base_url == "http://localhost:11434/v1"
+    assert config.llm.allow_remote is False
+    assert config.llm.answer_model == "qwen2.5:7b"
+    assert config.llm.vision_model == "qwen2.5vl:7b"
+
+    assert config.embedding.model == "BAAI/bge-m3"
+    assert config.embedding.use_fp16 is False
+    assert config.reranker.model == "BAAI/bge-reranker-v2-m3"
+    assert config.reranker.use_fp16 is False
+
+    assert (config.chunking.min_tokens, config.chunking.max_tokens) == (400, 800)
+    assert (config.chunking.overlap_min_tokens, config.chunking.overlap_max_tokens) == (50, 100)
+
+    assert config.retrieval.candidates == 30
+    assert config.retrieval.top_k == 6
+    assert config.retrieval.default_access_group == "all"
+
+    assert config.qdrant.url is None
+    assert config.generation.not_found_message == "I could not find this in the documents."
+
+    # Docling's built-in OCR for scanned pages, and picture crops for the vision model.
+    assert config.parsing.ocr is True
+    assert config.figures.describe is True
+    # A file that looks like real customer data stops ingestion.
+    assert config.screening.enabled is True
+    # The threshold is left unset until it has been chosen from real test questions.
+    assert config.retrieval.rerank_score_threshold is None
+
+
+def test_project_config_does_not_cut_chunks_before_the_models_see_them(config):
+    """FlagEmbedding's own limit is 512 tokens for both models; chunks go up to 800."""
+    assert config.embedding.max_length >= config.chunking.max_tokens
+    assert config.reranker.max_length >= config.chunking.max_tokens
+    assert config.paths.manifest == config.root_dir / "manifest.csv"
+    # Docling's models sit in a git-ignored folder inside the project.
+    assert config.parsing.artifacts_path == config.root_dir / "models" / "docling"
+
+
+def test_paths_are_absolute_and_based_on_the_config_folder(config, project_root):
+    assert config.config_file == project_root / "config.yaml"
+    assert config.root_dir == project_root
+
+    assert config.qdrant.path == project_root / "data" / "qdrant"
+    assert config.paths.docs_dir == project_root / "docs"
+    assert config.paths.data_dir == project_root / "data"
+    assert config.paths.sqlite_path == project_root / "data" / "docqa.sqlite"
+    assert config.paths.eval_questions == project_root / "eval" / "questions.csv"
+    for name in type(config.paths).model_fields:
+        assert getattr(config.paths, name).is_absolute(), name
+
+
+def test_paths_do_not_depend_on_the_current_folder(tmp_path, monkeypatch, project_root):
+    monkeypatch.chdir(tmp_path)
+    config = load_config(project_root / "config.yaml")
+    assert config.qdrant.path == project_root / "data" / "qdrant"
+
+
+def test_relative_paths_follow_a_config_file_kept_elsewhere(tmp_path, raw_config, write_config):
+    path = write_config(raw_config, tmp_path / "elsewhere")
+    config = load_config(path)
+    assert config.root_dir == tmp_path / "elsewhere"
+    assert config.qdrant.path == tmp_path / "elsewhere" / "data" / "qdrant"
+    assert config.paths.docs_dir == tmp_path / "elsewhere" / "docs"
+
+
+def test_absolute_paths_are_kept_as_given(tmp_path, raw_config, write_config):
+    outside = tmp_path / "outside" / "qdrant"
+    raw_config["qdrant"]["path"] = str(outside)
+    config = load_config(write_config(raw_config, tmp_path / "project"))
+    assert config.qdrant.path == outside
+
+
+def test_config_cannot_be_changed_after_loading(config):
+    with pytest.raises(ValidationError):
+        config.llm.answer_model = "something-else"
+
+
+# -- which file is used ---------------------------------------------------------------
+
+
+def test_environment_variable_selects_the_file(monkeypatch, raw_config, write_config):
+    raw_config["llm"]["answer_model"] = "model-from-env-file"
+    monkeypatch.setenv(CONFIG_ENV_VAR, str(write_config(raw_config)))
+    assert load_config().llm.answer_model == "model-from-env-file"
+
+
+def test_path_argument_wins_over_environment_variable(
+    tmp_path, monkeypatch, raw_config, write_config
+):
+    raw_config["llm"]["answer_model"] = "model-from-env-file"
+    monkeypatch.setenv(CONFIG_ENV_VAR, str(write_config(raw_config, tmp_path / "env")))
+    raw_config["llm"]["answer_model"] = "model-from-argument"
+    explicit = write_config(raw_config, tmp_path / "arg")
+    assert load_config(explicit).llm.answer_model == "model-from-argument"
+
+
+def test_config_in_the_current_folder_is_found(tmp_path, monkeypatch, raw_config, write_config):
+    path = write_config(raw_config)
+    monkeypatch.chdir(tmp_path)
+    assert find_config_file() == path
+
+
+def test_falls_back_to_the_project_config(tmp_path, monkeypatch, project_root):
+    monkeypatch.chdir(tmp_path)  # no config.yaml here
+    assert find_config_file() == project_root / "config.yaml"
+
+
+def test_missing_file_named_by_argument_is_an_error(tmp_path):
+    with pytest.raises(ConfigError, match="not found"):
+        load_config(tmp_path / "nope.yaml")
+
+
+def test_missing_file_named_by_environment_variable_is_an_error(tmp_path, monkeypatch):
+    monkeypatch.setenv(CONFIG_ENV_VAR, str(tmp_path / "nope.yaml"))
+    with pytest.raises(ConfigError, match=CONFIG_ENV_VAR):
+        load_config()
+
+
+# -- what is rejected -----------------------------------------------------------------
+
+
+def test_invalid_yaml_is_an_error(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("llm: [unclosed\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="not valid YAML"):
+        load_config(path)
+
+
+@pytest.mark.parametrize("content", ["", "- a\n- b\n", "just a string\n"])
+def test_file_must_hold_sections(tmp_path, content):
+    path = tmp_path / "config.yaml"
+    path.write_text(content, encoding="utf-8")
+    with pytest.raises(ConfigError, match="mapping"):
+        load_config(path)
+
+
+def _set(section: str, key: str, value):
+    def change(raw):
+        raw[section][key] = value
+
+    return change
+
+
+def _drop(section: str, key: str | None = None):
+    def change(raw):
+        if key is None:
+            del raw[section]
+        else:
+            del raw[section][key]
+
+    return change
+
+
+def _qdrant(path, url):
+    def change(raw):
+        raw["qdrant"]["path"] = path
+        raw["qdrant"]["url"] = url
+
+    return change
+
+
+@pytest.mark.parametrize(
+    ("change", "expected_in_message"),
+    [
+        pytest.param(_set("llm", "answer_modle", "x"), "llm.answer_modle", id="misspelt key"),
+        pytest.param(_set("llm", "answer_model", ""), "llm.answer_model", id="empty model name"),
+        pytest.param(_set("llm", "temperature", -1), "llm.temperature", id="negative temperature"),
+        pytest.param(_set("llm", "max_tokens", 0), "llm.max_tokens", id="zero max_tokens"),
+        pytest.param(_set("embedding", "batch_size", 0), "embedding.batch_size", id="zero batch"),
+        pytest.param(_set("retrieval", "candidates", "many"), "retrieval.candidates", id="type"),
+        pytest.param(_set("retrieval", "top_k", 31), "top_k must not be larger", id="top_k"),
+        pytest.param(_set("chunking", "min_tokens", 900), "min_tokens must not be", id="min>max"),
+        pytest.param(_set("chunking", "overlap_min_tokens", 200), "overlap_min", id="overlap order"),
+        pytest.param(_set("chunking", "overlap_max_tokens", 400), "smaller than", id="overlap size"),
+        pytest.param(_drop("retrieval", "top_k"), "retrieval.top_k", id="missing key"),
+        pytest.param(_drop("chunking"), "chunking", id="missing section"),
+        pytest.param(_drop("parsing"), "parsing", id="missing parsing section"),
+        pytest.param(_set("parsing", "table_mode", "best"), "parsing.table_mode", id="table mode"),
+        pytest.param(_set("parsing", "images_scale", 0), "parsing.images_scale", id="zero scale"),
+        pytest.param(_set("parsing", "ocr_languages", "en"), "parsing.ocr_languages", id="not a list"),
+        pytest.param(_set("figures", "min_page_fraction", 1.5), "figures.min_page_fraction", id="frac"),
+        pytest.param(_set("screening", "flag_at", 0), "screening.flag_at", id="flag at zero"),
+        pytest.param(_set("ingestion", "confirm_above_files", 0), "ingestion.confirm", id="confirm"),
+        pytest.param(_drop("reranker", "normalize"), "reranker.normalize", id="normalize missing"),
+        pytest.param(_set("embedding", "max_length", 512), "embedding.max_length must", id="embed cut"),
+        pytest.param(_set("reranker", "max_length", 512), "reranker.max_length must", id="rerank cut"),
+        pytest.param(_set("generation", "evidence_char_budget", 0), "evidence_char_budget", id="budget"),
+        pytest.param(_drop("paths", "manifest"), "paths.manifest", id="manifest missing"),
+        pytest.param(_qdrant("data/qdrant", "http://localhost:6333"), "exactly one", id="both"),
+        pytest.param(_qdrant(None, None), "exactly one", id="neither"),
+    ],
+)
+def test_invalid_settings_are_rejected_and_named(
+    raw_config, write_config, change, expected_in_message
+):
+    change(raw_config)
+    with pytest.raises(ConfigError) as error:
+        load_config(write_config(raw_config))
+    assert expected_in_message in str(error.value)
+
+
+def test_unknown_section_is_rejected(raw_config, write_config):
+    raw_config["surprise"] = {"key": 1}
+    with pytest.raises(ConfigError, match="surprise"):
+        load_config(write_config(raw_config))
+
+
+# -- what is allowed ------------------------------------------------------------------
+
+
+def test_rerank_threshold_may_be_unset_or_a_number(raw_config, write_config):
+    raw_config["retrieval"]["rerank_score_threshold"] = None
+    assert load_config(write_config(raw_config)).retrieval.rerank_score_threshold is None
+    raw_config["retrieval"]["rerank_score_threshold"] = 0.35
+    assert load_config(write_config(raw_config)).retrieval.rerank_score_threshold == 0.35
+
+
+def test_qdrant_server_instead_of_local_folder(raw_config, write_config):
+    """The later move to a Qdrant server is a config change."""
+    raw_config["qdrant"]["path"] = None
+    raw_config["qdrant"]["url"] = "http://qdrant.internal:6333"
+    config = load_config(write_config(raw_config))
+    assert config.qdrant.path is None
+    assert config.qdrant.url == "http://qdrant.internal:6333"
+
+
+def test_paths_section_accepts_path_objects_in_code(config):
+    """Paths are real Path objects, ready to use."""
+    assert isinstance(config.paths.docs_dir, Path)

@@ -1,0 +1,44 @@
+# Generated data: parsed JSON, figure crops, Qdrant index, SQLite logs
+data/
+
+# Sample documents: the PDFs in docs/ (at any depth) stay out of git
+docs/**/*.pdf
+
+# Virtual environments (the project venv lives outside this folder, see machine.md)
+.venv/
+venv/
+env/
+
+# Model caches and weights (models are never committed)
+.cache/
+hf_cache/
+models/
+.ollama/
+*.gguf
+*.safetensors
+*.onnx
+*.bin
+*.pt
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Secrets and local settings
+.env
+.streamlit/secrets.toml
+.claude/settings.local.json
+.claude/launch.json
+
+# Editor and OS files
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+~$*

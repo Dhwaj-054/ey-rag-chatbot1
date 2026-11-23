@@ -1,0 +1,36 @@
+# Direct dependencies, pinned to exact versions.
+# Resolved on 2026-11-18 for Python 3.14 on Windows (see machine.md).
+# requirements-lock.txt holds the complete set, including every transitive dependency.
+#
+# Install:  python -m pip install -r requirements.txt
+#           python -m pip install --no-deps -e .
+
+# PyTorch, CPU-only. The "+cpu" builds exist only on the PyTorch CPU index.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.15.0+cpu
+# Docling needs torchvision. Pinned here so it matches the CPU build of torch.
+torchvision==0.29.2+cpu
+
+# Parsing and OCR
+docling==2.150.1
+
+# Embeddings and reranker (BGE-M3, bge-reranker-v2-m3)
+FlagEmbedding==1.4.2
+# Used directly by check_env to look in the local model cache
+huggingface_hub==1.33.0
+
+# Vector store, local mode
+qdrant-client==1.20.0
+
+# LLM client: plain HTTP to Ollama's OpenAI-compatible endpoint
+httpx==0.28.1
+
+# Configuration
+PyYAML==6.0.3
+pydantic==2.14.3
+
+# Chat UI
+streamlit==1.67.0
+
+# Tests
+pytest==9.2.0
