@@ -40,7 +40,7 @@ llm:
   answer_model: qwen2.5:7b
   vision_model: qwen2.5vl:7b            # figures and flowcharts, ingestion only
   temperature: 0.0                      # starting value
-  max_tokens: 1024                      # starting value: longest reply, in tokens
+  max_tokens: 400                       # SPEED: shorter replies reduce CPU generation time
   connect_timeout_s: 10                 # starting value
   request_timeout_s: 600                # starting value: CPU answers can take minutes
   # Not settable from here: the context window. Ollama defaults to 4,096 tokens and
@@ -148,8 +148,8 @@ chunking:
 
 retrieval:
   # SPEED. Reranking is the slow part of a search: its time grows with this number.
-  candidates: 30                        # taken from hybrid search, before reranking
-  top_k: 6                              # kept after reranking
+  candidates: 15                        # taken from hybrid search, before reranking
+  top_k: 4                              # kept after reranking
   rrf_k: 60                             # starting value: usual reciprocal rank fusion constant
   # Below this best rerank score the chatbot replies with not_found_message and the
   # answer model is not called. CLAUDE.md gives no number: a sensible one depends on
@@ -167,7 +167,7 @@ generation:
   # question. Evidence beyond it is cut and marked as cut. On a CPU the model needs
   # most of its time to read the evidence, so this is the main setting for answer
   # time. 12,000 characters is about three full passages. Starting value.
-  evidence_char_budget: 12000
+  evidence_char_budget: 8000
   # SPEED. A retrieved passage is given to the answer model only if its rerank score
   # is at least this share of the best passage's score. The best passage always is.
   # 0 gives the model every retrieved passage. Starting value.

@@ -339,15 +339,23 @@ def _retrieval_payload(
     retrieval: RetrievalResult, given: tuple[ScoredChunk, ...], config: Config
 ) -> dict[str, Any]:
     given_ids = {source.chunk.chunk_id for source in given}
+    threshold = config.retrieval.rerank_score_threshold
+    visible = [
+        (rank, source)
+        for rank, source in enumerate(retrieval.chunks, start=1)
+        if threshold is None
+        or source.rerank_score is None
+        or source.rerank_score >= threshold
+    ]
     return {
         "found": retrieval.found,
         "best_score": retrieval.best_score,
-        "threshold": config.retrieval.rerank_score_threshold,
+        "threshold": threshold,
         "elapsed_s": retrieval.elapsed_s,
         "timings": asdict(retrieval.timings),
         "sources": [
             _source_payload(rank, source, source.chunk.chunk_id in given_ids)
-            for rank, source in enumerate(retrieval.chunks, start=1)
+            for rank, source in visible
         ],
     }
 

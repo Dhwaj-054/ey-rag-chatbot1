@@ -76,6 +76,10 @@ values in the 2026-11-20 profile only where they were verified by commands.
 - The 2026-11-23 focused real-model tests passed all 4 selected tests in 181 seconds.
   The 8-bit benchmark took 1.2 seconds for embedding 12 texts (1.8 seconds full),
   and 1.5 seconds for reranking 12 passages (3.1 seconds full).
+- For the 2026-11-23 UI, the measured settings are candidates 15, top-k 4,
+  evidence budget 8,000 characters, maximum answer length 400 tokens, and source
+  display filtering at the rerank threshold of 0.50. Ollama keep-alive is set to
+  `30m`; answer-time results for these settings have not yet been measured.
 
 #### Current Summary
 

@@ -34,8 +34,8 @@ def test_project_config_holds_the_values_decided_in_claude_md(config):
     assert (config.chunking.min_tokens, config.chunking.max_tokens) == (400, 800)
     assert (config.chunking.overlap_min_tokens, config.chunking.overlap_max_tokens) == (50, 100)
 
-    assert config.retrieval.candidates == 30
-    assert config.retrieval.top_k == 6
+    assert config.retrieval.candidates == 15
+    assert config.retrieval.top_k == 4
     assert config.retrieval.default_access_group == "all"
 
     assert config.qdrant.url is None

@@ -19,7 +19,7 @@ from docqa.config import ConfigError
 from docqa.db import Database, DocumentRecord, utc_now
 from docqa.index import index_chunks
 from docqa.index.store import ChunkStore, StoreError
-from docqa.schema import ElementType
+from docqa.schema import ElementType, RetrievalResult, RetrievalTimings, ScoredChunk
 from docqa.web import server
 from docqa.web.server import STATIC_DIR, AppState, Cancelled, create_app
 from tests.fakes import FakeEmbedder, FakeReranker, ScriptedLLM, make_chunk
@@ -140,7 +140,7 @@ def test_status_says_ready_when_everything_is_in_place(ready):
     assert status["llm"] == {"reachable": True, "answer_model_present": True, "detail": ""}
     assert status["settings"]["answer_model"] == "qwen2.5:7b"
     assert status["settings"]["answer_model_host"] is None  # on this machine
-    assert status["settings"]["candidates"] == 30
+    assert status["settings"]["candidates"] == 15
 
 
 def test_status_says_when_the_answer_model_is_on_another_machine(temp_config, monkeypatch):
@@ -228,6 +228,26 @@ def test_history_lists_the_latest_questions_first(ready):
 
 
 # -- asking ------------------------------------------------------------------------------
+
+
+def test_retrieval_payload_hides_sources_below_the_rerank_threshold(temp_config):
+    def threshold(raw):
+        raw["retrieval"]["rerank_score_threshold"] = 0.5
+
+    config = temp_config(threshold)
+    above = ScoredChunk(make_chunk("above", "Relevant text"), 0.8, 0.75)
+    below = ScoredChunk(make_chunk("below", "Weak text"), 0.4, 0.49)
+    retrieval = RetrievalResult(
+        "question",
+        (above, below),
+        True,
+        0.75,
+        timings=RetrievalTimings(candidates=2),
+    )
+
+    payload = server._retrieval_payload(retrieval, (above,), config)
+
+    assert [source["chunk_id"] for source in payload["sources"]] == ["above"]
 
 
 def test_a_question_is_answered_as_a_stream_of_steps(ready):
