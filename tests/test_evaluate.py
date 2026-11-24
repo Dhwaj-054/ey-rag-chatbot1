@@ -111,8 +111,19 @@ def test_questions_are_read_with_their_row_numbers(tmp_path):
     assert (third.source_doc, third.page) == (None, None)
 
 
-def test_the_projects_own_question_file_has_the_right_columns_and_no_rows_yet(config):
-    assert load_questions(config.paths.eval_questions) == []
+def test_the_projects_own_question_file_can_be_used(config):
+    """The file is edited by hand. A slip in it should show here, not halfway through a
+    run that takes minutes for each question."""
+    questions = load_questions(config.paths.eval_questions)  # raises on a row that cannot be used
+
+    assert len({q.question for q in questions}) == len(questions), "a question occurs twice"
+    for question in questions:
+        where = f"row {question.number}"
+        assert question.expected_answer, f"{where}: no expected answer"
+        if question.answerable:
+            assert question.source_doc.lower().endswith(".pdf"), f"{where}: source_doc is not a PDF file name"
+        else:
+            assert question.source_doc is None, f"{where}: a question that no document answers names a document"
 
 
 @pytest.mark.parametrize(

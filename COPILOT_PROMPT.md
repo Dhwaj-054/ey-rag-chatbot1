@@ -143,9 +143,11 @@ replacing the estimates in `design.md` section 15 with measurements.
 
 ### 8. Test questions
 
-`eval/questions.csv` has only its header row. With the user, write 10 to 20 questions
-about the ingested documents, including at least five that no document answers (type
-`not_in_docs`). `eval/README.md` explains the columns. Do not invent an expected
+`eval/questions.csv` holds 37 questions about figures since 2026-11-24, and none about
+running text or tables. `eval/README.md` lists the documents those questions need.
+With the user, write 10 to 20 questions about text and tables in the ingested
+documents, and bring the questions that no document answers (type `not_in_docs`) to at
+least five. `eval/README.md` explains the columns. Do not invent an expected
 answer: open the page, quote it, and have the user confirm it. A wrong expected answer
 makes every later number meaningless.
 

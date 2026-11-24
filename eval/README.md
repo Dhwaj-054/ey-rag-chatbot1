@@ -36,6 +36,53 @@ Tips:
   for CSV. Saving from Excel as "CSV UTF-8" does this for you.
 - 5 to 10 questions per type is enough to start.
 
+## The figure questions (written on 2026-11-24)
+
+`questions.csv` holds 37 questions: 27 of type `flowchart`, 6 of type `chart` and 4 of
+type `not_in_docs`. There are none yet about running text or tables. Every expected
+answer was read off the figure itself, on the page given. The project owner has still
+to confirm them, and none of the questions has been run.
+
+They need these 11 documents, ingested with figure descriptions switched on:
+
+| File name (`source_doc`) | Page | Figure | Published at |
+|---|---|---|---|
+| `CERSAI Central KYC Registry Operating Guidelines 2016.pdf` | 7 | Swim-lane flowchart "FI Registration" | https://www.pfrda.org.in/documents/33652/145099/10.pdf |
+| `SEBI Consultation Paper Blocking of Funds for Trading in Secondary Market.pdf` | 9 | "Transaction Flow", seven numbered steps | https://www.sebi.gov.in/sebi_data/attachdocs/jan-2023/1673940594580.pdf |
+| `IBBI Insolvency and Bankruptcy News Jan-Mar 2025.pdf` | 5, 12 | Line, bar and pie charts | https://www.ibbi.gov.in/uploads/whatsnew/912e97d4d9f96651386541fb7059203b.pdf |
+| `IDBI Bank Complaint Process Flow.pdf` | 1 | Flowchart with escalation by day | https://www.idbi.bank.in/pdf/Complaint-Flow-Chart.pdf |
+| `India Post Payments Bank Complaint Flowchart.pdf` | 1 | Flowchart with two decisions | https://ippbonline.bank.in/documents/d/ippb/flow-chart-of-csrm-final |
+| `Jammu and Kashmir Bank Grievance Redressal Flowchart.pdf` | 1 | Flowchart with four levels | https://jkb.bank.in/sites/default/files/Grievance_Redressal_Flowchart.pdf |
+| `DCB Bank Customer Grievance Redressal Flowchart.pdf` | 1, 2 | One flowchart over two pages | https://www.dcb.bank.in/api/dcb/assets/2026-03/Complaint-Flowchart-March-2026.pdf |
+| `SEBI Circular SCORES 20 Sep 2023.pdf` | 12 | Schedule III, process chart | https://www.sebi.gov.in/sebi_data/attachdocs/sep-2023/1695456916964.pdf |
+| `IRDAI Insurance Repository Handbook.pdf` | 8, 10 | Process flows | https://policyholder.gov.in/documents/37343/625507/Handbook_Final+version.pdf |
+| `Reserve Bank of India (Non-Banking Financial Companies Peer to Peer Lending Platform).pdf` | 24 | "Funds Transfer Mechanism" | in the RBI set, under `Master Directions/` |
+| `Master Circular Lead Bank Scheme.pdf` | 68 | Flow chart of Annex III | in the RBI set, under `Master Circulars/` |
+
+The first nine are not part of the RBI set. Save them under exactly these names, in a
+folder such as `Figure tests` inside the documents folder, or add them with "+ Add" on
+the chat screen. PDFs are not kept in git.
+
+What the questions test, and what to look for in the results:
+
+- **The wording is inside a picture** in the CERSAI guidelines, the SEBI consultation
+  paper, the peer to peer directions, and the pie charts and the line chart of the IBBI
+  newsletter. Their answers can only come from the description the vision model wrote.
+- **The wording is selectable text** in the other flowcharts and in the bar chart of
+  the IBBI newsletter (page 5). The words of the boxes can be found as plain text; the
+  arrows and the yes/no branches exist only in the drawing. A right answer does not
+  prove that the description was used: look at the kind of the passages found.
+- The procedure of the Lead Bank Scheme flow chart is also written out on pages 66 and
+  67. An answer that cites one of those pages is right as well, although "page in top
+  5" will count it as a miss.
+- The four `not_in_docs` questions are about matters no document here deals with, so
+  the search should find nothing relevant. Change them if such a document is added.
+- The personal-data check counts two numbers in the IBBI newsletter (pages 24 and 27).
+  They are figures in tables; the limit of three is not reached.
+
+With an answer taking about two and a half minutes, all 37 questions take about an
+hour and a half. `--retrieval-only` first is much quicker.
+
 ## Running the questions
 
 Stop the chat screen first. Then, from the project folder:

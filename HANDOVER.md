@@ -65,7 +65,7 @@ marked "stand-ins" was tested with fakes in place of the models.
 | Chat screen and its progress tracker | `web/server.py`, `web/static/` | Tests through the server's own addresses; opened in a browser on Laptop B with stand-in models | With real answers |
 | Adding documents from the screen | `web/ingestion.py` | Tests through the server's own addresses with the real pipeline, register and index; done in a browser on Laptop B with a stand-in for Docling | With Docling and the real models; memory use while it runs |
 | Statistics | `stats.py`, `db.py` | Tests | The new figures on a real query log |
-| Evaluation | `evaluate.py` | Tests with stand-ins | On real questions. `eval/questions.csv` has no rows yet |
+| Evaluation | `evaluate.py` | Tests with stand-ins | On real questions. `eval/questions.csv` holds 37 questions about figures since 2026-11-24 (`eval/README.md`); none has been run, and there are none about text or tables |
 | Comparing an older copy | `scripts/compare_with_release.py` | Tests; run on the 2026-11-20 zip and on the code from Laptop A | |
 
 Test counts on 2026-11-24: 555 fast tests pass on Laptop B (`pytest -m "not slow"`). 21
