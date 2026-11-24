@@ -148,14 +148,15 @@ embedding:
 reranker:
   model: BAAI/bge-reranker-v2-m3        # a local folder also works
   use_fp16: false                       # must stay false on CPU
-  # SPEED. true: the reranker's weights are held as 8-bit numbers. On the laptop that
-  # runs the models its test ranked 12 short passages in 1.5 s instead of 3.1 s, and
-  # the answering passage still came first. Switched on with release 2026-11-23b.
-  # It is the one speed setting that is on and can change a ranking: scores shift
-  # slightly, so choose the threshold again (python -m docqa.evaluate
-  # --suggest-threshold). How much it changes which passages are found on real
-  # questions HAS NOT BEEN MEASURED. false: full precision, at about twice the time.
-  quantize: true
+  # SPEED. true: the reranker's weights are held as 8-bit numbers, which ranks about
+  # twice as fast: on the laptop that runs the models its test ranked 12 short
+  # passages in 1.5 s instead of 3.1 s, with the answering passage still first. It
+  # can also change a ranking: scores shift slightly, and how much that changes which
+  # passages are found on real questions has not been measured. Off, at the project
+  # owner's choice on 2026-11-24: what is found comes before speed. If it is ever
+  # switched on, choose the threshold again (python -m docqa.evaluate
+  # --suggest-threshold).
+  quantize: false
   # Passages scored in one go. They are sorted by length first, so that a batch holds
   # passages of similar length. Starting value.
   batch_size: 4

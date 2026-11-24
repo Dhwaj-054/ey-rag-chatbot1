@@ -45,10 +45,10 @@ def test_project_config_holds_the_values_decided_in_claude_md(config):
     # one), and picture crops for the vision model.
     assert config.parsing.ocr == "auto"
     assert config.figures.describe is True
-    # The 8-bit option. Off for the embedding model: switching it means indexing every
-    # document again. On for the reranker since 2026-11-23: it is the same model, with
-    # its weights held as 8-bit numbers, and ranks about twice as fast.
-    assert config.embedding.quantize is False and config.reranker.quantize is True
+    # The stack's models run at full precision. The 8-bit option exists for both and is
+    # off for both: it is faster and can change a ranking, and the project owner chose
+    # full precision on 2026-11-24.
+    assert config.embedding.quantize is False and config.reranker.quantize is False
     # A file that looks like real customer data stops ingestion.
     assert config.screening.enabled is True
     # A temporary value, set on the laptop that runs the models for its first documents.

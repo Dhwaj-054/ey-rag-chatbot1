@@ -14,7 +14,7 @@ its changes has run with a real model**. Its 555 fast tests pass there. `HANDOVE
 section "What changed on 2026-11-23b and 2026-11-24", lists the changes. In short:
 
 - the reranker and the embedding model are run without a wasted trial run of the
-  library, and the reranker with 8-bit weights;
+  library;
 - the answer model is given its instructions when the screen starts;
 - every answer shows its steps as they happen;
 - "+ Add" in the side panel of the chat screen ingests PDFs;
@@ -53,6 +53,9 @@ passages on the processor. Do not replace Qdrant or SQLite.
   user's yes in this chat, each time.
 - **No time limits, and nothing that gives a model less to read to save time,** unless
   the user asks for it.
+- **Full precision.** Leave `reranker.quantize` and `embedding.quantize` at false. The
+  user chose that: what is found comes before speed. The tests of step 5 still time
+  the 8-bit reranker, for the record.
 - **One change at a time, measured.** Note the times before, change one thing, ask the
   same questions, note the times after.
 - **Fix the cause.** Never weaken, skip or delete a test to make it pass.
@@ -233,4 +236,4 @@ Watch the run and Task Manager's memory graph. Check:
 6. What failed and how it was fixed, with the files changed.
 7. What you could not test.
 8. What the user has to decide: which answer model to use, and the threshold (it was
-   never chosen from real questions, and the reranker now runs with 8-bit weights).
+   never chosen from real questions).

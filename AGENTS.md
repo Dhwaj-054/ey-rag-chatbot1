@@ -58,9 +58,11 @@ says exactly what was checked, and what to try to make answers faster.
   this in the documents." and do not call the answer model.
 - There is no time limit on an answer or on ranking, on purpose. One was built on
   2026-11-23 and taken out the next day at the project owner's request: it could only
-  be kept by giving the models less to read. Do not bring one back. What may make
-  answers faster is in `notes/2026-11-24-faster-answers-without-limits.md`, and a
-  different model is the owner's decision.
+  be kept by giving the models less to read. Do not bring one back. The 8-bit weights
+  of the search models stay off for the same reason: they are faster and can change a
+  ranking. What may make answers faster is in
+  `notes/2026-11-24-faster-answers-without-limits.md`, and a different model is the
+  owner's decision.
 
 ## Where things are
 
@@ -77,7 +79,7 @@ src/docqa/generate/       prompt, answer, citation checking, query log
 src/docqa/web/            chat screen: server.py (Starlette), static/ (the page) and
                           ingestion.py (adding documents from the screen)
 src/docqa/stats.py        what is indexed, and how long questions take
-src/docqa/quantize.py     the 8-bit weights for the two search models
+src/docqa/quantize.py     the optional 8-bit weights for the two search models (off)
 src/docqa/batching.py     how the two search models are run in batches
 src/docqa/evaluate.py     runs eval/questions.csv
 src/docqa/check_env.py    PASS/FAIL check of the machine

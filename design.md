@@ -40,9 +40,9 @@ for: an answer in at most two minutes, a progress tracker, and adding PDFs from 
 chat screen. What that changed, by section:
 
 - Section 8.3. 15 candidates are reranked and 4 kept, not 30 and 6 (set on the second
-  laptop). The reranker runs with 8-bit weights and from the project's own loop: the
-  library's call runs its longest batch twice, once as a trial whose result it throws
-  away.
+  laptop). The reranker is run from the project's own loop: the library's call runs
+  its longest batch twice, once as a trial whose result it throws away. Its 8-bit
+  weights were on in release 2026-11-23b and are off again, at the owner's choice.
 - Section 9. Release 2026-11-23b gave an answer a time limit of 120 seconds, and
   ranking one of 20. Both were taken out on 2026-11-24: a limit could only be kept by
   giving the answer model one or two passages where four were found. An answer takes
@@ -892,7 +892,7 @@ threshold.
 | `retrieval.default_access_group` | `all` | Group used when none is given |
 | `generation.not_found_message` | "I could not find this in the documents." | The refusal sentence |
 | `llm.reasoning_effort` | none | `none` switches off the thinking of an answer model that thinks before it answers |
-| `reranker.quantize` | `true` | The reranker runs with 8-bit weights |
+| `reranker.quantize` | `false` | `true` holds the reranker's weights as 8-bit numbers: about twice as fast, and scores shift slightly |
 | `paths.uploads_dir` | `data/uploads` | Where PDFs added from the chat screen are kept |
 | `ui.max_upload_mb` | `200` | The largest PDF the chat screen accepts |
 

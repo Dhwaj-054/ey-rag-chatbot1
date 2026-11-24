@@ -156,7 +156,7 @@ def test_status_says_ready_when_everything_is_in_place(ready):
     assert status["settings"]["answer_model"] == "qwen2.5:7b"
     assert status["settings"]["answer_model_host"] is None  # on this machine
     assert status["settings"]["candidates"] == 15
-    assert status["settings"]["reranker_8_bit"] is True
+    assert status["settings"]["reranker_8_bit"] is False  # full precision, at the owner's choice
     assert "time_limit_s" not in status["settings"]  # an answer takes as long as it takes
     assert status["ingesting"] is False
 

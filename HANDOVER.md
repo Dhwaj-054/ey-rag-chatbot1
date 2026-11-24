@@ -86,11 +86,11 @@ to its end. What is listed here is what stayed and what was added on 2026-11-24.
    inputs prepared by the library's own functions, so the scores are the same. Timed
    on Laptop B with a stand-in model of the reranker's size, for 15 passages: 42 s the
    library's way, 33 s without the trial run. With 8-bit weights: 22 s and 14 s.
-2. **The reranker runs with 8-bit weights:** `reranker.quantize: true`. Laptop A's own
-   test showed it ranking twice as fast with the answering passage still first. It is
-   the one speed setting that is on and can change a ranking: what it does to real
-   questions has not been measured. `false` gives full precision at about twice the
-   time. The threshold of 0.50 was a temporary value before and is one now.
+2. **The reranker runs at full precision again.** Release 2026-11-23b had switched its
+   8-bit weights on (`reranker.quantize`), which ranks about twice as fast: Laptop A's
+   own test showed that, with the answering passage still first. It can also change a
+   ranking slightly, and what it does to real questions was never measured. The
+   project owner chose full precision on 2026-11-24. It remains a setting.
 3. **The embedding model is run the same way.** Ingestion embeds one document at a
    time. A document of five chunks was three runs of the model; it is two now.
 4. **The answer model is given its instructions when the screen starts.** Ollama keeps
@@ -189,9 +189,10 @@ for 15 passages of 180 to 820 tokens:
 | Batches in the order the search returned them | 41 s | 21 s |
 | One passage at a time | 39 s | 15 s |
 
-So this release should rank in about a third of the time that release 2026-11-23 took
-with the same number of candidates. Laptop A's processor is a different one: its times
-will differ, the proportions should not by much. Its real-model tests print them.
+So this release should rank in about three quarters of the time that release
+2026-11-23 took with the same number of candidates, and in a third of it if the 8-bit
+weights were switched on. Laptop A's processor is a different one: its times will
+differ, the proportions should not by much. Its real-model tests print them.
 
 **The rest is the answer model,** reading and then writing. On a laptop processor a 7B
 model reads some tens of characters a second and writes a few tokens a second. Since
@@ -220,12 +221,13 @@ its sources.
 | Step | Time | What decides it |
 |---|---|---|
 | Question and database | under a second | |
-| Ranking 15 passages | 15 to 25 s | the reranker, on the processor |
+| Ranking 15 passages | 30 to 45 s | the reranker, on the processor |
 | The answer model reads | about 2 minutes | about 2,000 tokens of evidence at about 15 tokens a second |
 | The answer model writes | 20 to 50 s | 100 to 200 tokens at 4 to 5 tokens a second |
 
-About three minutes, two of them the 7B model reading. So the step that matters is the
-reading, and the way to make it faster without less evidence is a faster answer model.
+Three to three and a half minutes, two of them the 7B model reading. So the step that
+matters is the reading, and the way to make it faster without less evidence is a faster
+answer model.
 
 **Measure first.** Ask the same three questions before and after each change. The
 tracker on each answer shows the time of every step, and this prints the medians, for
@@ -240,7 +242,6 @@ python -m docqa.stats
 | What | Setting | What it costs |
 |---|---|---|
 | Ranking without the library's trial run | none (`retrieve/reranker.py`) | Nothing that is known: the scores are the same |
-| 8-bit reranker | `reranker.quantize: true` | Scores shift slightly. Not measured on real questions |
 | Instructions given at start | `ui.warm_up: true` | Nothing |
 | From Laptop A, 2026-11-23 | `candidates: 15`, `top_k: 4`, `evidence_char_budget: 8000`, `max_tokens: 400` | Fewer passages found and given |
 | From Laptop A, 2026-11-23 | Ollama keeps a model in memory for 30 minutes: the user environment variable `OLLAMA_KEEP_ALIVE=30m` | Memory stays in use |
@@ -249,7 +250,7 @@ python -m docqa.stats
 
 1. **A smaller answer model of the same family.** `Qwen3-4B-Instruct-2507` is about
    half the size of `qwen2.5:7b`, so it should read and write in about half the time:
-   an answer of three minutes in a minute and a half to two, from all the evidence. A
+   an answer of three to three and a half minutes in about two, from all the evidence. A
    2026 study that ran 17 small models as the answering model on a processor found it
    the best trade of quality against time, with scores close to the 8B model of its
    family at a fifth of the time. Whether it answers these documents as well as the 7B
@@ -302,19 +303,23 @@ python -m docqa.stats
    is the one this project uses.
 3. **A smaller reranker.** `Alibaba-NLP/gte-reranker-modernbert-base` is about a
    quarter of the size of the present one (Apache 2.0 according to its page), so
-   ranking should take about a quarter of the time. Ranking is a small part of an
-   answer, so this comes after 1. It is a setting (`reranker.model`) and a download,
+   ranking should take about a quarter of the time: some 10 s where it is 30 to 45 s.
+   It is a setting (`reranker.model`) and a download,
    and the owner's decision. Another reranker has another scale of scores: choose the
    threshold again and judge the search again (`python -m docqa.evaluate
    --suggest-threshold`, `--retrieval-only`).
-4. **8-bit embedding model:** `embedding.quantize: true`. It does little for a
-   question. It shortens ingestion: embedding was 384 s of the 404 s that bringing 15
-   documents up to date took. The vectors change, so every document is embedded again
-   once, and the stored vectors and the question's must be made with the same setting.
 
 **Faster, at a cost to what is found or read.** These are the owner's to weigh, with
 test questions to judge them by:
 
+- The reranker's 8-bit weights (`reranker.quantize: true`): ranking in under half the
+  time (14 s against 33 s in the timing above). Scores shift slightly, and the effect
+  on real questions was never measured. Switched off at the owner's choice on
+  2026-11-24. After switching it on, choose the threshold again.
+- The embedding model's 8-bit weights (`embedding.quantize: true`). It does little for
+  a question and shortens ingestion: embedding was 384 s of the 404 s that bringing 15
+  documents up to date took. The vectors change slightly, so what a search finds can
+  change, and every document is embedded again once.
 - Fewer candidates (`retrieval.candidates`), fewer passages kept (`retrieval.top_k`),
   less evidence (`generation.evidence_char_budget`).
 - Smaller passages (`chunking`): the model reads half as much if passages are half the
@@ -330,7 +335,7 @@ For ingestion:
    indexed by their captions.
 2. `parsing.table_mode: fast` uses Docling's quicker table model. Tables with merged
    cells may come out worse.
-3. `embedding.quantize: true`, as above.
+3. `embedding.quantize: true`, with the cost named above.
 4. `ingestion.group_files` sets how many files are read before the models change. A
    larger group means fewer model loads; a smaller one means results sooner.
 
@@ -682,8 +687,8 @@ d. **The tracker's estimate of the reading time** (`Database.read_speed` in `db.
    If the line "About 50 s on this computer" is far off, the model was not in memory
    at the time, or was reading its instructions again (item b). Nothing depends on the
    estimate but the bar.
-e. **The 8-bit reranker and the threshold.** Scores shift a little, and the threshold of
-   0.50 was never chosen from real questions. A question that is refused although its
+e. **The threshold.** 0.50 was never chosen from real questions. A question that is
+   refused although its
    passage is in the documents, or answered from an unrelated passage, points here:
    write questions in `eval/questions.csv` and run
    `python -m docqa.evaluate --suggest-threshold`.

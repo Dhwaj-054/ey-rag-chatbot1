@@ -18,9 +18,10 @@ enough, and every candidate is ranked.
 
 What stayed from that release, because it costs nothing in quality: the search models
 run without the library's wasted trial run, the answer model is given its instructions
-when the screen starts, the progress tracker, and adding documents from the screen. One
-thing stayed that can change a ranking slightly: the reranker's 8-bit weights
-(`reranker.quantize`), which make ranking about twice as fast.
+when the screen starts, the progress tracker, and adding documents from the screen.
+The reranker's 8-bit weights, which that release had switched on, were switched off
+again the same day, at the project owner's choice: they rank about twice as fast, and
+they can change a ranking slightly.
 
 ## Where the time of an answer goes now
 
@@ -30,11 +31,11 @@ up to 8,000 characters of evidence:
 | Step | Time | What decides it |
 |---|---|---|
 | Question and database | under a second | |
-| Ranking 15 passages | 15 to 25 s (estimate; 14 s on the other laptop with a stand-in model) | the reranker: 568 million numbers, on the processor |
+| Ranking 15 passages | 30 to 45 s (estimate; 33 s on the other laptop with a stand-in model) | the reranker: 568 million numbers, on the processor |
 | The answer model reads | about 2 minutes (estimate) | about 2,000 tokens of evidence at about 15 tokens a second |
 | The answer model writes | 20 to 50 s (estimate) | 100 to 200 tokens at 4 to 5 tokens a second |
 
-So about three minutes, two of them the 7B model reading. Anything that is to make an
+So three to three and a half minutes, two of them the 7B model reading. Anything that is to make an
 answer much faster without giving the model less to read has to make that reading
 faster.
 
@@ -46,8 +47,8 @@ faster.
   7.6. It is the variant that does not "think" before answering. In Ollama:
   `qwen3:4b-instruct-2507-q4_K_M`, 2.5 GB.
 - **How much faster:** reading and writing time go roughly with the size of a model, so
-  about half (estimate): an answer of about three minutes becomes about a minute and
-  a half to two minutes, from all the evidence.
+  about half (estimate): an answer of three to three and a half minutes becomes about
+  two minutes, from all the evidence.
 - **Quality:** a 2026 study ran 17 small models as the answering model of a RAG system
   on a processor, without a graphics card, and scored the answers. This model came out
   as the best trade: correctness 0.71, faithfulness to the evidence 0.80, 71 s per
@@ -80,8 +81,9 @@ found fast cores only much better, another found all cores best). `HANDOVER.md`,
   a quarter of the present one, reads up to 8,192 tokens, Apache 2.0, and its own page
   gives it a score of 56.19 on the BEIR benchmark. No comparison with
   `bge-reranker-v2-m3` on the same test was found.
-- **How much faster:** ranking in roughly a quarter of the time (estimate), so 5 s
-  where it is 15 to 25 s. That is a small part of an answer, so this comes after 1.
+- **How much faster:** ranking in roughly a quarter of the time (estimate), so about
+  10 s where it is 30 to 45 s. After the reading, ranking is the largest part of an
+  answer.
 - **Cost:** the reranker decides when the chatbot says it found nothing. Another
   reranker has another scale of scores, so the threshold has to be chosen again, and
   the search judged again, on real questions.
@@ -105,6 +107,15 @@ built-in graphics chips. It runs on Windows without Docker, offers the same kind
 address as Ollama, and a ready-made 4-bit version of Qwen2.5 7B exists for it. No measurement for
 this kind of laptop was found, so the gain is unknown. It would be a second model
 server next to Ollama, which is a change to the stack.
+
+## Decided against: the reranker's 8-bit weights
+
+`reranker.quantize: true` holds the reranker's weights as 8-bit numbers. In the timing
+with a stand-in model, ranking 15 passages took 14 s with it and 33 s without, and in a
+test on the laptop that runs the models the real reranker still put the answering
+passage first. Scores shift slightly, and what that does to real questions was never
+measured. The project owner chose full precision on 2026-11-24: what is found comes
+before speed. It remains a setting.
 
 ## Looked at and not recommended
 
