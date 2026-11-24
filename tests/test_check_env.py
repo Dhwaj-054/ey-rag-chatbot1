@@ -267,9 +267,9 @@ def test_main_exits_zero_when_everything_passes(canned_checks, project_root, cap
     assert "[FAIL]" not in output
     assert "6 passed, 0 failed" in output
     # Everything is on this machine and the threshold is set, so nothing is flagged. The
-    # two notes that are left describe the setup: where the documents are, and the limit.
+    # one note that is left says where the documents are.
     assert "not on this machine" not in output and "rerank_score_threshold is not set" not in output
-    assert "the documents folder holds" in output and "at most 120 s" in output
+    assert "the documents folder holds" in output
 
 
 def test_main_notes_a_threshold_that_is_not_set_without_failing(canned_checks, temp_config, capsys):
@@ -357,7 +357,7 @@ def test_main_reports_a_broken_configuration_and_skips_what_needs_it(
 # -- notes about this machine's settings ----------------------------------------------------
 
 
-def test_the_notes_say_where_the_documents_are_and_what_the_time_limit_is(tmp_cfg):
+def test_the_notes_say_where_the_documents_are(tmp_cfg):
     from docqa.check_env import setup_notes
 
     empty = setup_notes(tmp_cfg)
@@ -369,7 +369,6 @@ def test_the_notes_say_where_the_documents_are_and_what_the_time_limit_is(tmp_cf
 
     assert any("holds no PDF files" in note and "config.local.yaml" in note for note in empty)
     assert any("holds 1 PDF file(s)" in note for note in filled)
-    assert any("at most 120 s (generation.time_limit_s)" in note for note in filled)
     assert not any("config.local.yaml, which is laid over" in note for note in filled)
 
 
@@ -377,11 +376,9 @@ def test_the_notes_say_when_a_local_file_is_in_use(raw_config, write_config, tmp
     from docqa.check_env import setup_notes
     from docqa.config import load_config
 
-    raw_config["generation"]["time_limit_s"] = None
     path = write_config(raw_config)
     (tmp_path / "config.local.yaml").write_text("retrieval:\n  candidates: 8\n  top_k: 3\n", encoding="utf-8")
 
     notes = setup_notes(load_config(path))
 
     assert any("taken from config.local.yaml" in note for note in notes)
-    assert not any("generation.time_limit_s" in note for note in notes)

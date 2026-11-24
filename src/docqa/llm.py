@@ -156,16 +156,13 @@ class ChatStream:
     Iterate over it to receive the text as it is generated. Once the iteration has
     ended, ``result`` holds the complete reply with token counts and timing. A stream
     can be read once. If you stop early, call ``close()`` (or use it in a ``with``
-    block) to release the connection; ``so_far()`` then gives what had arrived.
+    block) to release the connection.
     """
 
     def __init__(self, client: LLMClient, payload: dict[str, Any]) -> None:
         self._client = client
         self._payload = payload
         self._result: ChatResult | None = None
-        self._parts: list[str] = []
-        self._model: str = payload["model"]
-        self._started: float | None = None
         self._pieces = self._read()
 
     def __iter__(self) -> Iterator[str]:
@@ -188,27 +185,10 @@ class ChatStream:
             raise RuntimeError("The stream has not been read to its end yet.")
         return self._result
 
-    def so_far(self) -> ChatResult:
-        """What has arrived up to now, for a stream that is stopped before its end.
-
-        The token counts are ``None``: the server sends them only with the end of a
-        reply. ``finish_reason`` is ``None`` for the same reason.
-        """
-        if self._result is not None:
-            return self._result
-        return ChatResult(
-            text="".join(self._parts),
-            model=self._model,
-            finish_reason=None,
-            prompt_tokens=None,
-            completion_tokens=None,
-            latency_s=0.0 if self._started is None else time.perf_counter() - self._started,
-        )
-
     def _read(self) -> Iterator[str]:
-        started = self._started = time.perf_counter()
-        parts = self._parts
-        model = self._model
+        started = time.perf_counter()
+        parts: list[str] = []
+        model: str = self._payload["model"]
         finish_reason: str | None = None
         prompt_tokens: int | None = None
         completion_tokens: int | None = None
@@ -235,7 +215,7 @@ class ChatStream:
                             f"The LLM server reported an error while answering: "
                             f"{_error_text(event['error'])}"
                         )
-                    model = self._model = event.get("model") or model
+                    model = event.get("model") or model
                     usage = _as_dict(event.get("usage"))
                     prompt_tokens = usage.get("prompt_tokens", prompt_tokens)
                     completion_tokens = usage.get("completion_tokens", completion_tokens)
@@ -459,6 +439,10 @@ class LLMClient:
         if stream:
             # Ask for token counts at the end of the stream, for the query log.
             payload["stream_options"] = {"include_usage": True}
+        if self._config.reasoning_effort and payload["model"] == self._config.answer_model:
+            # For the answer model only: a server may refuse this field for a model
+            # that cannot think, and the vision model is not asked to.
+            payload["reasoning_effort"] = self._config.reasoning_effort
         if extra:
             clash = _RESERVED_PAYLOAD_KEYS.intersection(extra)
             if clash:

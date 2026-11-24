@@ -315,3 +315,36 @@ def test_command_line_says_when_there_is_nothing_to_run(tmp_cfg, capsys):
 
     assert main(["--config", str(tmp_cfg.config_file)]) == 1
     assert "There are no questions to run" in capsys.readouterr().out
+
+
+def test_the_questions_can_be_run_with_another_answer_model(setup, monkeypatch):
+    """--answer-model: two models are compared on the same questions without editing config.yaml."""
+    from docqa.config import load_config
+    from docqa.evaluate import with_answer_model
+
+    config = setup["config"]
+    config.paths.eval_questions.parent.mkdir(parents=True, exist_ok=True)
+    questions_file(config.paths.eval_questions.parent)
+    options = setup["options"]
+    servers: list[ScriptedLLM] = []
+
+    def llm_for(given):
+        servers.append(ScriptedLLM(given, scripted_reply))
+        return servers[-1].client
+
+    monkeypatch.setattr("docqa.resources.get_embedder", lambda config: options["embedder"])
+    monkeypatch.setattr("docqa.resources.get_reranker", lambda config: options["reranker"])
+    monkeypatch.setattr("docqa.resources.get_store", lambda config: options["store"])
+    monkeypatch.setattr("docqa.resources.get_llm", llm_for)
+    out = config.paths.eval_results_dir / "other-model"
+
+    assert main(["--config", str(config.config_file), "--answer-model", "qwen3:4b-instruct", "--out", str(out)]) == 0
+
+    requests = [request for server in servers for request in server.requests]
+    assert requests and all(request["model"] == "qwen3:4b-instruct" for request in requests)
+    assert "- Answer model: qwen3:4b-instruct" in (out / "summary.md").read_text(encoding="utf-8")
+    # The file on disk is as it was, and so is everything else in the settings.
+    assert load_config(config.config_file).llm.answer_model == "qwen2.5:7b"
+    changed = with_answer_model(config, "another:1b")
+    assert changed.llm.answer_model == "another:1b" and changed.llm.vision_model == config.llm.vision_model
+    assert changed.paths == config.paths and changed.config_file == config.config_file

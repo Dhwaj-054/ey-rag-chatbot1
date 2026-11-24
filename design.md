@@ -42,14 +42,12 @@ chat screen. What that changed, by section:
 - Section 8.3. 15 candidates are reranked and 4 kept, not 30 and 6 (set on the second
   laptop). The reranker runs with 8-bit weights and from the project's own loop: the
   library's call runs its longest batch twice, once as a trial whose result it throws
-  away. Ranking stops after 20 seconds and uses the candidates scored by then; those
-  that hybrid search placed highest are scored first.
-- Section 9. An answer has a time limit of 120 seconds. After the search, the evidence
-  is cut to what the answer model can read in the time left, less 35 seconds kept for
-  writing. Its reading speed is measured on the machine, from the answers already
-  given: characters of evidence divided by the wait for the first word. When the time
-  is up the writing stops at the end of the last complete statement, and the answer
-  says so. On a laptop processor that leaves room for one or two passages.
+  away.
+- Section 9. Release 2026-11-23b gave an answer a time limit of 120 seconds, and
+  ranking one of 20. Both were taken out on 2026-11-24: a limit could only be kept by
+  giving the answer model one or two passages where four were found. An answer takes
+  as long as it takes. What may shorten it without less evidence, a smaller answer
+  model above all, is in `notes/2026-11-24-faster-answers-without-limits.md`.
 - Section 7.1. The embedding model is run from the project's own loop as well, which
   saves one run of the model for every document ingested.
 - Section 10. The chat screen shows a progress tracker on every answer: the server
@@ -61,8 +59,8 @@ chat screen. What that changed, by section:
 - Section 13. Settings that differ on one machine go in `config.local.yaml`, which is
   laid over `config.yaml` and is not in git.
 
-None of this has run with a real model. `HANDOVER.md`, "What changed on 2026-11-23b",
-has the details and the measurements made so far.
+None of this has run with a real model. `HANDOVER.md`, "What changed on 2026-11-23b
+and 2026-11-24", has the details and the measurements made so far.
 
 | Part | Status on 2026-11-20 |
 |---|---|
@@ -771,7 +769,7 @@ times. In the chat:
 - Above each answer a tracker shows its five steps: reading the question, the
   database search, ranking, the answer model reading, and the answer model writing. The
   step in hand has a running clock, ranking shows how many candidates are done, and a
-  bar shows the time used of the limit. When the answer is finished the tracker keeps
+  bar shows how far the step in hand is. When the answer is finished the tracker keeps
   the time every step took.
 - "+ Add" in the side panel adds documents: by dropping or choosing PDF files, or by
   ticking files of the documents folder that were never ingested. The run shows every
@@ -889,15 +887,11 @@ threshold.
 | `chunking.overlap_max_tokens` | `100` | Most overlap |
 | `retrieval.candidates` | `15` (30 until 2026-11-23) | Chunks taken from hybrid search, before reranking |
 | `retrieval.top_k` | `4` (6 until 2026-11-23) | Chunks kept after reranking |
-| `retrieval.rerank_time_limit_s` | `20` | Ranking stops after this many seconds and uses the candidates scored by then |
 | `retrieval.rrf_k` | `60` | The constant in reciprocal rank fusion. Starting value |
 | `retrieval.rerank_score_threshold` | not set | Below this, the reply is the not-found sentence. Must be set in Phase 1 |
 | `retrieval.default_access_group` | `all` | Group used when none is given |
 | `generation.not_found_message` | "I could not find this in the documents." | The refusal sentence |
-| `generation.time_limit_s` | `120` | The longest an answer should take. `null`: no limit |
-| `generation.writing_reserve_s` | `35` | Of that, the seconds kept for writing |
-| `generation.min_evidence_chars` | `1500` | The evidence is never cut below this to fit the limit |
-| `generation.read_chars_per_s` | `45` | The answer model's reading speed, assumed until the machine has measured it |
+| `llm.reasoning_effort` | none | `none` switches off the thinking of an answer model that thinks before it answers |
 | `reranker.quantize` | `true` | The reranker runs with 8-bit weights |
 | `paths.uploads_dir` | `data/uploads` | Where PDFs added from the chat screen are kept |
 | `ui.max_upload_mb` | `200` | The largest PDF the chat screen accepts |

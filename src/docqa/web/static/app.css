@@ -221,8 +221,8 @@ button { cursor: pointer; }
   padding: 16px 18px;
 }
 
-/* The progress tracker at the top of an answer: five steps, a bar for the time used
-   of the limit, and one line that says what is happening now. */
+/* The progress tracker at the top of an answer: five steps, a bar for how far the
+   step in hand is, and one line that says what is happening now. */
 .tracker {
   margin: -2px 0 14px; padding: 12px 14px 10px;
   border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2);
@@ -251,7 +251,6 @@ button { cursor: pointer; }
   content: ""; position: absolute; left: 4.5px; top: 1.5px; width: 4px; height: 8px;
   border: solid var(--surface); border-width: 0 2px 2px 0; transform: rotate(45deg);
 }
-.t-step.cut .t-mark { border-color: var(--warn); background: var(--warn); }
 .t-step.failed .t-mark { border-color: var(--bad); background: var(--bad); }
 .t-step.skipped .t-mark { border-style: dashed; }
 .t-name { font-size: 12.5px; font-weight: 600; color: var(--muted); }
@@ -264,8 +263,9 @@ button { cursor: pointer; }
 
 .t-bar { margin-top: 10px; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
 .t-fill { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 3px; transition: width 0.25s linear; }
-.t-bar.near .t-fill { background: var(--warn); }
-.t-bar.over .t-fill { background: var(--bad); }
+/* A step whose length is not known: a short piece of bar that moves from side to side. */
+.t-bar.unknown .t-fill { width: 30%; transition: none; animation: sweep 1.6s ease-in-out infinite alternate; }
+@keyframes sweep { from { margin-left: 0; } to { margin-left: 70%; } }
 .t-foot { margin-top: 7px; display: flex; justify-content: space-between; gap: 12px; font-size: 12.5px; color: var(--muted); }
 .t-now { min-width: 0; }
 .t-clock { flex: none; font-variant-numeric: tabular-nums; }

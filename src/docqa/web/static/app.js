@@ -18,7 +18,7 @@
 
 const $ = (id) => document.getElementById(id);
 const thread = $("thread");
-const view = { busy: false, controller: null, canAsk: false, ingesting: false, documents: [], statusTimer: null };
+const view = { busy: false, controller: null, canAsk: false, ingesting: false, documents: [], statusTimer: null, typical: null };
 
 // -- small helpers ---------------------------------------------------------------------
 
@@ -172,20 +172,10 @@ async function refreshStatus() {
       title: "The model that reads each candidate passage against the question",
       lines: [
         settings.reranker_8_bit ? "It runs with 8-bit weights, which is about twice as fast on a processor." : "It runs at full precision.",
-        "Up to " + plural(settings.candidates, "candidate", "candidates") + " are ranked" +
-          (settings.rerank_time_limit_s ? ", for at most " + seconds(settings.rerank_time_limit_s) + "." : "."),
+        "Up to " + plural(settings.candidates, "candidate", "candidates") + " are ranked for each question, and the best " + settings.top_k + " are kept.",
       ],
     }),
   ];
-  if (settings.time_limit_s) {
-    chips.push(chip("Time limit", seconds(settings.time_limit_s), {
-      title: "The longest an answer should take",
-      lines: [
-        "The evidence is cut to what the answer model can read in that time.",
-        "When the time is up, the answer stops at the end of its last complete statement.",
-      ],
-    }));
-  }
   $("models").replaceChildren(...chips);
 
   const loading = status.models.state === "loading";
@@ -238,6 +228,7 @@ async function refreshStats() {
   const index = stats.index;
   const queries = stats.queries;
   const none = "no data yet";
+  view.typical = queries.median_latency_s || null;
   const given = (value) => value !== null && value !== undefined;
   const kinds = index.text_passages === null
     ? []
@@ -253,7 +244,7 @@ async function refreshStats() {
   $("facts").replaceChildren(
     fact("Questions asked", count(queries.questions), {
       title: queries.answered + " answered, " + queries.refused + " refused, " + queries.failed + " failed",
-      lines: [queries.stopped_at_limit ? plural(queries.stopped_at_limit, "answer was", "answers were") + " stopped at the time limit." : null],
+      lines: [],
     }),
     fact("Typical answer time", given(queries.median_latency_s) ? seconds(queries.median_latency_s) : none, {
       title: "From question to finished answer",
@@ -273,7 +264,7 @@ async function refreshStats() {
     }),
     fact("Reading speed", given(queries.median_read_chars_per_s) ? count(Math.round(queries.median_read_chars_per_s)) + " characters/s" : none, {
       title: "How fast the answer model reads the passages it is given",
-      lines: ["Measured on this computer. With a time limit, it decides how much evidence an answer gets."],
+      lines: ["Measured on this computer. The tracker uses it to say how long the reading of an answer will take."],
     }),
     fact("Writing speed", given(queries.median_tokens_per_s) ? queries.median_tokens_per_s.toFixed(1) + " tokens/s" : none, {
       title: "How fast the answer model writes once it has started",
@@ -454,12 +445,15 @@ function createTracker(host) {
     item.append(el("span", "t-mark"), el("span", "t-name", step.label), info);
     item._tip = { title: step.tip.title, lines: [...step.tip.lines] };
     list.append(item);
-    nodes[step.name] = { item, info, step, began: null, detail: "" };
+    nodes[step.name] = { item, info, step, began: null, detail: "", done: 0, of: 0 };
   }
+  // The bar shows how far the step in hand is: exactly for ranking, which counts its
+  // passages; by the time it usually takes for reading; and as "working" for the rest.
   const bar = el("div", "t-bar");
   bar.setAttribute("role", "progressbar");
-  bar.setAttribute("aria-label", "Time used of the limit for an answer");
+  bar.setAttribute("aria-label", "Progress of the step in hand");
   bar.setAttribute("aria-valuemin", "0");
+  bar.setAttribute("aria-valuemax", "100");
   const fill = el("span", "t-fill");
   bar.append(fill);
   bar.hidden = true;
@@ -471,11 +465,11 @@ function createTracker(host) {
   root.append(list, bar, foot);
   host.append(root);
 
-  let limit = null;
   let began = null;
   let timer = null;
   let active = null;
   let words = 0;
+  const expected = {}; // seconds a step can be expected to take, where that is known
 
   function mark(name, state) {
     nodes[name].item.className = "t-step " + state;
@@ -485,21 +479,35 @@ function createTracker(host) {
     return began === null ? 0 : (performance.now() - began) / 1000;
   }
 
-  function showClock(value) {
-    if (limit) {
-      const share = value / limit;
-      fill.style.width = Math.min(share, 1) * 100 + "%";
-      bar.className = "t-bar" + (share > 1 ? " over" : share > 0.85 ? " near" : "");
-      bar.setAttribute("aria-valuenow", String(Math.round(Math.min(value, limit))));
-      time.textContent = clock(value) + " of " + clock(limit);
+  function showClock(value, finished) {
+    const usual = !finished && view.typical ? " · an answer usually takes " + seconds(view.typical) : "";
+    time.textContent = clock(value) + usual;
+  }
+
+  function showBar() {
+    if (!active) {
+      bar.hidden = true;
+      return;
+    }
+    const node = nodes[active];
+    let share = null;
+    if (active === "ranking" && node.of) share = node.done / node.of;
+    else if (expected[active]) share = Math.min((performance.now() - node.began) / 1000 / expected[active], 0.97);
+    bar.hidden = false;
+    bar.classList.toggle("unknown", share === null);
+    if (share === null) {
+      fill.style.width = "";
+      bar.removeAttribute("aria-valuenow");
     } else {
-      time.textContent = clock(value);
+      fill.style.width = share * 100 + "%";
+      bar.setAttribute("aria-valuenow", String(Math.round(share * 100)));
     }
   }
 
   function tick() {
     if (began === null) return;
     showClock(elapsed());
+    showBar();
     if (!active) return;
     const node = nodes[active];
     const spent = (performance.now() - node.began) / 1000;
@@ -512,17 +520,30 @@ function createTracker(host) {
     timer = null;
   }
 
+  function end(state, message) {
+    stopClock();
+    for (const step of STEPS) {
+      if (nodes[step.name].item.classList.contains("active")) mark(step.name, state);
+    }
+    active = null;
+    bar.hidden = true;
+    if (began !== null) showClock(elapsed(), true);
+    if (message) now.textContent = message;
+  }
+
   const self = {
     // The server has started on this question: the clock runs from here.
-    begin(timeLimit) {
-      limit = timeLimit || null;
+    begin() {
       began = performance.now();
-      bar.hidden = !limit;
-      if (limit) bar.setAttribute("aria-valuemax", String(Math.round(limit)));
       now.textContent = "Starting";
       stopClock();
       timer = setInterval(tick, 250);
       tick();
+    },
+
+    // How long a step can be expected to take on this computer, when the server knows.
+    expect(name, seconds_) {
+      if (seconds_ > 0) expected[name] = seconds_;
     },
 
     step(data) {
@@ -543,32 +564,26 @@ function createTracker(host) {
         mark(data.name, "active");
         now.textContent = node.step.doing;
         if (data.name === "ranking") {
+          node.done = 0;
+          node.of = data.of;
           node.detail = "0 of " + data.of;
           now.textContent = "Ranking " + plural(data.of, "candidate passage", "candidate passages") + " against the question";
         } else if (data.name === "reading") {
           node.detail = plural(data.passages, "passage", "passages");
           now.textContent = "The answer model is reading " + plural(data.passages, "passage", "passages") +
             " (" + count(data.chars) + " characters)." +
-            (data.expected_s ? " About " + seconds(data.expected_s) + " on this computer." : "");
+            (expected.reading ? " About " + seconds(expected.reading) + " on this computer." : "");
         }
       } else if (data.state === "progress") {
+        node.done = data.done;
+        node.of = data.of;
         node.detail = data.done + " of " + data.of;
       } else if (data.state === "end") {
         mark(data.name, "done");
         let text = seconds(data.took_s);
-        if (data.name === "ranking") {
-          const cut = data.done < data.of;
-          text = (cut ? data.done + " of " + data.of : String(data.done)) + " · " + text;
-          if (cut) {
-            node.item.classList.add("cut");
-            node.item._tip.lines.push("Stopped at its time limit: " + data.done + " of the " + data.of + " candidates were read.");
-          }
-        } else if (data.name === "writing") {
-          if (words) text = plural(words, "word", "words") + " · " + text;
-          if (data.stopped) node.item.classList.add("cut");
-        } else if (data.name === "reading" && node.detail) {
-          text = node.detail + " · " + text;
-        }
+        if (data.name === "ranking") text = data.done + " · " + text;
+        else if (data.name === "writing" && words) text = plural(words, "word", "words") + " · " + text;
+        else if (data.name === "reading" && node.detail) text = node.detail + " · " + text;
         node.info.textContent = text;
         if (active === data.name) active = null;
       }
@@ -588,27 +603,11 @@ function createTracker(host) {
     },
 
     finish(message) {
-      stopClock();
-      for (const step of STEPS) {
-        if (nodes[step.name].item.classList.contains("active")) mark(step.name, "done");
-      }
-      active = null;
-      if (began !== null) showClock(elapsed());
-      if (message) now.textContent = message;
+      end("done", message);
     },
 
     fail(message) {
-      stopClock();
-      for (const step of STEPS) {
-        if (nodes[step.name].item.classList.contains("active")) mark(step.name, "failed");
-      }
-      active = null;
-      if (began !== null) showClock(elapsed());
-      now.textContent = message;
-    },
-
-    running() {
-      return timer !== null || began === null;
+      end("failed", message);
     },
   };
   return self;
@@ -652,6 +651,7 @@ function createAnswer() {
 
     showRetrieval(data) {
       retrieval = data;
+      tracker.expect("reading", data.expected_read_s);
       const given = data.sources.filter((source) => source.given_to_model).length;
       if (!data.found) {
         tracker.skipModel();
@@ -666,9 +666,8 @@ function createAnswer() {
         ? "Passages found (" + data.sources.length + "). " + given + " given to the answer model."
         : "Closest passages (" + data.sources.length + "). None was used.";
       const list = el("div", "source-list");
-      const limited = Boolean(data.plan && data.plan.shortened);
       for (const source of data.sources) {
-        const node = sourceCard(source, data.found, limited);
+        const node = sourceCard(source, data.found);
         sourceNodes.set(source.chunk_id, node);
         list.append(node);
       }
@@ -692,7 +691,7 @@ function createAnswer() {
         tracker.finish(
           data.refused
             ? "The answer model replied that the passages do not answer the question."
-            : (timings.stopped_at_limit ? "Stopped at the time limit after " : "Answered in ") + seconds(data.latency_s),
+            : "Answered in " + seconds(data.latency_s),
         );
       }
       ended = true;
@@ -731,7 +730,7 @@ function createAnswer() {
       }
       meta.append(chip("Total", seconds(data.latency_s), {
         title: "From the start of the search to the last word",
-        lines: [timings.time_limit_s ? "The limit for an answer is " + seconds(timings.time_limit_s) + "." : null],
+        lines: [],
       }));
       scrollDown();
     },
@@ -775,7 +774,7 @@ function createAnswer() {
   return self;
 }
 
-function sourceCard(source, found, limited) {
+function sourceCard(source, found) {
   const card = el("details", "source" + (source.given_to_model ? " given" : ""));
   const summary = el("summary");
   const title = el("span", "src-title", source.short_title);
@@ -785,9 +784,7 @@ function sourceCard(source, found, limited) {
     const unused = el("span", "badge unused", "not given to the model");
     unused._tip = {
       title: "Left out to keep the answer fast",
-      lines: [limited
-        ? "There was no time left to read it within the limit for an answer, or its score is well below the best passage's."
-        : "Its score is well below the best passage's, or the evidence limit was reached."],
+      lines: ["Its score is well below the best passage's, or the evidence limit was reached."],
     };
     summary.append(unused);
   }
@@ -887,7 +884,7 @@ async function ask(question) {
       throw new Error(body.error || "The server answered " + response.status + ".");
     }
     await readEvents(response, (event, data) => {
-      if (event === "start") answer.tracker.begin(data.time_limit_s);
+      if (event === "start") answer.tracker.begin();
       else if (event === "step") answer.tracker.step(data);
       else if (event === "retrieval") answer.showRetrieval(data);
       else if (event === "token") answer.addText(data.text);

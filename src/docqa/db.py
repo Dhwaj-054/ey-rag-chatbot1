@@ -154,10 +154,21 @@ class QueryStats:
     """Median seconds the reranker took."""
     median_read_chars_per_s: float | None = None
     """Median reading speed of the answer model: characters of evidence per second of
-    waiting for its first word. The time limit for an answer is planned with it."""
-    stopped_at_limit: int = 0
-    """Answers whose writing was stopped because the time limit had run out."""
+    waiting for its first word. The chat screen uses it to say how long the reading of
+    an answer's evidence can be expected to take."""
     last_asked_at: str | None = None
+
+
+@dataclass(frozen=True)
+class ModelStats:
+    """Typical times of one answer model, drawn from the questions it answered."""
+
+    answer_model: str
+    answers: int
+    median_latency_s: float | None = None
+    median_first_token_s: float | None = None
+    median_read_chars_per_s: float | None = None
+    median_tokens_per_s: float | None = None
 
 
 def utc_now() -> str:
@@ -352,7 +363,6 @@ class Database:
 
         answered = [row for row in rows if not row["error"] and not row["refused"]]
         search, database, rerank, first_token, speed, reading = [], [], [], [], [], []
-        stopped = 0
         for row in rows:
             timings = json.loads(row["timings"]) if row["timings"] else None
             if not timings or row["error"]:
@@ -373,7 +383,6 @@ class Database:
             read = _read_speed(timings)
             if read is not None:
                 reading.append(read)
-            stopped += bool(timings.get("stopped_at_limit"))
         return QueryStats(
             questions=len(rows),
             answered=len(answered),
@@ -386,9 +395,48 @@ class Database:
             median_tokens_per_s=_median(speed),
             median_rerank_s=_median(rerank),
             median_read_chars_per_s=_median(reading),
-            stopped_at_limit=stopped,
             last_asked_at=rows[-1]["asked_at"],
         )
+
+    def model_stats(self) -> list[ModelStats]:
+        """Typical times for each answer model that has answered, the most used first.
+
+        What to look at after trying another answer model: how long its answers took,
+        how fast it reads and how fast it writes, next to the model it replaced.
+        """
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT answer_model, latency_s, timings FROM query_log WHERE error IS NULL "
+                "AND refused = 0 AND answer_model IS NOT NULL ORDER BY id"
+            ).fetchall()
+        names: dict[str, str] = {}
+        figures: dict[str, dict[str, list[float]]] = {}
+        for row in rows:
+            key = _model_key(row["answer_model"])
+            names.setdefault(key, row["answer_model"])
+            lists = figures.setdefault(key, {"latency": [], "first": [], "read": [], "write": []})
+            lists["latency"].append(row["latency_s"])
+            timings = json.loads(row["timings"]) if row["timings"] else {}
+            if timings.get("first_token_s") is not None:
+                lists["first"].append(timings["first_token_s"])
+            read = _read_speed(timings)
+            if read is not None:
+                lists["read"].append(read)
+            writing = (timings.get("generation_s") or 0.0) - (timings.get("first_token_s") or 0.0)
+            if timings.get("completion_tokens") and writing > 0:
+                lists["write"].append(timings["completion_tokens"] / writing)
+        found = [
+            ModelStats(
+                answer_model=names[key],
+                answers=len(lists["latency"]),
+                median_latency_s=_median(lists["latency"]),
+                median_first_token_s=_median(lists["first"]),
+                median_read_chars_per_s=_median(lists["read"]),
+                median_tokens_per_s=_median(lists["write"]),
+            )
+            for key, lists in figures.items()
+        ]
+        return sorted(found, key=lambda item: item.answers, reverse=True)
 
     def read_speed(self, answer_model: str, sample: int = _SPEED_SAMPLE) -> float | None:
         """How fast ``answer_model`` reads on this machine, in characters per second.
@@ -396,7 +444,8 @@ class Database:
         The median, over its latest ``sample`` answers, of the characters of evidence
         it was given divided by the seconds it took to write its first word.
         ``None`` if it has not answered anything yet. The result is kept for a few
-        seconds, since every question asks for it.
+        seconds, since every question asks for it. It is used to tell the reader how
+        long a wait to expect, and for nothing else.
         """
         wanted = (_model_key(answer_model), sample)
         kept = self._read_speeds.get(wanted)
@@ -456,7 +505,7 @@ class Database:
                     json.dumps(timings) if timings is not None else None,
                 ),
             )
-            self._read_speeds.clear()  # the next question plans with this answer counted in
+            self._read_speeds.clear()  # the next estimate counts this answer in
             return int(cursor.lastrowid or 0)
 
 
@@ -527,7 +576,7 @@ def _read_speed(timings: dict[str, Any]) -> float | None:
     The evidence is counted with the headers of its passages: the model reads those
     too. Its instructions and the question are not counted. They cost a little time
     with every answer, and so make the speed come out a little lower than the model
-    really reads, which errs on the side of an answer that is ready in time.
+    really reads.
     """
     waited = timings.get("first_token_s")
     chars = timings.get("evidence_chars")

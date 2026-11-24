@@ -191,9 +191,6 @@ class RetrievalTimings:
     """Scoring the candidates with the reranker. Usually the largest part."""
     candidates: int = 0
     """How many passages were reranked."""
-    candidates_found: int = 0
-    """How many passages hybrid search returned. More than ``candidates`` when
-    ``retrieval.rerank_time_limit_s`` ended the reranking early."""
 
 
 @dataclass(frozen=True)
@@ -211,11 +208,7 @@ class AnswerTimings:
     completion_tokens: int | None = None
     evidence_chars: int = 0
     """Characters of evidence that were sent to the answer model, with the headers of
-    its passages. The model's reading speed is measured in them."""
-    time_limit_s: float | None = None
-    """The time limit this answer was planned for (``generation.time_limit_s``)."""
-    stopped_at_limit: bool = False
-    """True if the writing was stopped because that limit had run out."""
+    its passages. The model's reading speed is worked out from them."""
 
 
 @dataclass(frozen=True)

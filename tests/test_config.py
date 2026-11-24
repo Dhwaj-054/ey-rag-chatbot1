@@ -46,14 +46,9 @@ def test_project_config_holds_the_values_decided_in_claude_md(config):
     assert config.parsing.ocr == "auto"
     assert config.figures.describe is True
     # The 8-bit option. Off for the embedding model: switching it means indexing every
-    # document again. On for the reranker since 2026-11-23, to bring an answer under two
-    # minutes: it is the same model, with its weights held as 8-bit numbers.
+    # document again. On for the reranker since 2026-11-23: it is the same model, with
+    # its weights held as 8-bit numbers, and ranks about twice as fast.
     assert config.embedding.quantize is False and config.reranker.quantize is True
-    # The time an answer may take, asked for on 2026-11-23, and what is derived from it.
-    assert config.generation.time_limit_s == 120
-    assert 0 < config.generation.writing_reserve_s < config.generation.time_limit_s
-    assert config.generation.min_evidence_chars <= config.generation.evidence_char_budget
-    assert config.retrieval.rerank_time_limit_s == 20
     # A file that looks like real customer data stops ingestion.
     assert config.screening.enabled is True
     # A temporary value, set on the laptop that runs the models for its first documents.
@@ -367,34 +362,44 @@ def test_a_mistake_in_the_local_file_is_reported_as_one(raw_config, write_config
         load_config(path)
 
 
+def test_nothing_limits_the_time_of_an_answer_or_of_the_ranking(raw_config, write_config):
+    """Limits were tried on 2026-11-23 and taken out: they cost evidence, and so answers."""
+    assert "time_limit_s" not in raw_config["generation"]
+    assert "rerank_time_limit_s" not in raw_config["retrieval"]
+
+    raw_config["generation"]["time_limit_s"] = 120
+    with pytest.raises(ConfigError, match=r"generation\.time_limit_s"):
+        load_config(write_config(raw_config))
+
+
+def test_the_largest_upload_must_be_a_size(temp_config):
+    def no_size(raw):
+        raw["ui"]["max_upload_mb"] = 0
+
+    with pytest.raises(ConfigError, match=r"ui\.max_upload_mb"):
+        temp_config(no_size)
+
+
 def test_the_projects_own_settings_are_tested_without_a_local_file(project_root, config):
     """A config.local.yaml on the machine that runs the tests must not change what they check."""
     assert config.local_file is None
     assert "config.local.yaml" in (project_root / ".gitignore").read_text(encoding="utf-8")
 
 
-# -- the time an answer may take -----------------------------------------------------------------
+# -- another answer model -------------------------------------------------------------------
 
 
-def test_the_time_limit_can_be_switched_off_and_its_parts_must_fit(temp_config):
-    def no_limit(raw):
-        raw["generation"]["time_limit_s"] = None
-        raw["retrieval"]["rerank_time_limit_s"] = None
+def test_nothing_about_thinking_is_sent_unless_the_setting_says_so(config, temp_config):
+    assert config.llm.reasoning_effort is None  # right for qwen2.5:7b, which does not think
 
-    config = temp_config(no_limit)
-    assert config.generation.time_limit_s is None and config.retrieval.rerank_time_limit_s is None
+    def another_model(raw):
+        raw["llm"].update(answer_model="qwen3:4b", reasoning_effort="none")
 
-    def reserve_longer_than_the_limit(raw):
-        raw["generation"]["time_limit_s"] = 30
-        raw["generation"]["writing_reserve_s"] = 30
+    llm = temp_config(another_model).llm
+    assert (llm.answer_model, llm.reasoning_effort) == ("qwen3:4b", "none")
 
-    with pytest.raises(ConfigError, match="writing_reserve_s must be smaller than time_limit_s"):
-        temp_config(reserve_longer_than_the_limit)
+    def empty(raw):
+        raw["llm"]["reasoning_effort"] = ""
 
-    for section, key in (("generation", "time_limit_s"), ("retrieval", "rerank_time_limit_s"), ("ui", "max_upload_mb")):
-
-        def not_positive(raw, section=section, key=key):
-            raw[section][key] = 0
-
-        with pytest.raises(ConfigError, match=rf"{section}\.{key}"):
-            temp_config(not_positive)
+    with pytest.raises(ConfigError, match=r"llm\.reasoning_effort"):
+        temp_config(empty)

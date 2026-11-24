@@ -193,21 +193,55 @@ def test_command_line_prints_the_figures(tmp_cfg, capsys):
     assert "documents:           1" in output and "Questions" in output
 
 
-def test_the_figures_behind_the_time_limit_are_reported_too(tmp_cfg):
-    """Ranking time, the answer model's reading speed, and answers stopped at the limit."""
+def test_the_ranking_time_and_the_reading_speed_are_reported_too(tmp_cfg):
     db = Database(tmp_cfg.paths.sqlite_path)
-    for chars, waited, stopped in ((3000, 60.0, False), (3600, 60.0, True), (2000, 25.0, False)):
+    for chars, waited in ((3000, 60.0), (3600, 60.0), (2000, 25.0)):
         answer = logged_answer(100, rerank=18.0, first_token=waited, generation=waited + 20, tokens=100)
-        timings = replace(answer.timings, evidence_chars=chars, time_limit_s=120.0, stopped_at_limit=stopped)
-        db.log_answer(replace(answer, timings=timings), "e", "r")
+        db.log_answer(replace(answer, timings=replace(answer.timings, evidence_chars=chars)), "e", "r")
 
     stats = db.query_stats()
     lines = describe(IndexStats(), stats)
 
     assert stats.median_rerank_s == 18.0
     assert stats.median_read_chars_per_s == pytest.approx(60.0)  # 50, 60 and 80 characters a second
-    assert stats.stopped_at_limit == 1
     assert "  of which ranking:    18 s" in lines
     assert "  median reading speed: 60 characters per second" in lines
-    assert "  stopped at the time limit: 1" in lines
+    assert not any("limit" in line for line in lines)
     assert "  median reading speed: no data yet" in describe(IndexStats(), QueryStats())
+
+
+def test_each_answer_model_is_summed_up_on_its_own(tmp_cfg):
+    """After trying another answer model, its times stand next to those of the one it replaced."""
+    db = Database(tmp_cfg.paths.sqlite_path)
+
+    def log(model: str, latency: float, first: float, chars: int, tokens: int, generation: float) -> None:
+        answer = logged_answer(latency, rerank=10.0, first_token=first, generation=generation, tokens=tokens)
+        db.log_answer(
+            replace(answer, answer_model=model, timings=replace(answer.timings, evidence_chars=chars)), "e", "r"
+        )
+
+    log("qwen2.5:7b", 200, 120, 6000, 100, 145)  # reads 50 characters a second, writes 4 tokens a second
+    log("qwen2.5:7b", 240, 150, 6000, 120, 180)  # 40 and 4
+    log("qwen2.5:7b", 220, 130, 6500, 100, 155)  # 50 and 4
+    log("qwen3:4b-instruct", 100, 50, 6000, 100, 62.5)  # 120 and 8
+    db.log_answer(logged_answer(40, rerank=10.0, first_token=0, generation=0, tokens=0, refused=True), "e", "r")
+
+    models = db.model_stats()
+    lines = describe(IndexStats(), db.query_stats(), models)
+
+    assert [(item.answer_model, item.answers) for item in models] == [("qwen2.5:7b", 3), ("qwen3:4b-instruct", 1)]
+    assert (models[0].median_latency_s, models[0].median_first_token_s) == (220, 130)
+    assert models[0].median_read_chars_per_s == pytest.approx(50.0)
+    assert models[0].median_tokens_per_s == pytest.approx(4.0)
+    assert models[1].median_read_chars_per_s == pytest.approx(120.0)
+    assert models[1].median_tokens_per_s == pytest.approx(8.0)
+    assert (
+        "  qwen2.5:7b: 3 answer(s), median total 220 s, first word after 130 s, "
+        "reads 50 characters/s, writes 4.0 tokens/s"
+    ) in lines
+    assert (
+        "  qwen3:4b-instruct: 1 answer(s), median total 100 s, first word after 50 s, "
+        "reads 120 characters/s, writes 8.0 tokens/s"
+    ) in lines
+    assert lines.index("By answer model") > lines.index("Questions")
+    assert "By answer model" not in describe(IndexStats(), QueryStats())

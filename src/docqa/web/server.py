@@ -17,12 +17,13 @@ It serves one page (``static/``) and a small API for it:
 it happens instead of waiting minutes for a finished answer. The page reads them with
 the browser's Streams API (``fetch`` and ``response.body.getReader()``):
 
-    start      {"time_limit_s": 120}   the clock of this answer starts
+    start      {}   the server has begun on this question: its clock starts
     step       {"name": ..., "state": "start" | "progress" | "end", ...}
                names: waiting (for another question or an ingestion), question (it is
                turned into vectors), database, ranking (with "done" and "of" after
                every batch), reading (the answer model reads the evidence) and writing
-    retrieval  the passages found, with scores and which ones go to the answer model
+    retrieval  the passages found, with scores and which ones go to the answer model,
+               and how long reading them can be expected to take
     token      {"text": "..."}   one piece of the answer as the model writes it
     answer     the finished answer: text with citations written out, notes, timings
     error      {"message": "..."}
@@ -37,7 +38,6 @@ Things done here for speed:
   either.
 - The passages are sent to the page as soon as the search ends, before the answer
   model has written anything. The reader has something to read during the wait.
-- An answer is planned to fit ``generation.time_limit_s`` (``docqa.generate.budget``).
 - Closing the page, or pressing Stop, ends the request to the answer model. The CPU
   is not left working on an answer nobody is waiting for.
 - One question is answered at a time, and none while documents are being ingested.
@@ -74,7 +74,6 @@ from starlette.staticfiles import StaticFiles
 from docqa import resources
 from docqa.config import Config, ConfigError, load_config
 from docqa.generate import answer, answer_body, choose_evidence, log_query, measured_read_speed
-from docqa.generate.budget import AnswerPlan, plan_answer
 from docqa.generate.prompt import system_prompt
 from docqa.llm import LLMError, is_local_url, system_message, user_message
 from docqa.retrieve import retrieve
@@ -382,8 +381,7 @@ def _answer_question(
     try:
         if cancel.is_set():
             raise Cancelled
-        started = time.perf_counter()
-        emit("start", {"time_limit_s": config.generation.time_limit_s})
+        emit("start", {})
 
         def on_step(name: str, step_state: str, details: dict[str, Any]) -> None:
             if cancel.is_set():
@@ -391,11 +389,13 @@ def _answer_question(
             emit("step", {"name": name, "state": step_state, **details})
 
         retrieval = retrieve(question, config, progress=on_step)
-        plan = plan_answer(
-            config, used_s=time.perf_counter() - started, read_chars_per_s=measured_read_speed(config)
-        )
-        given = choose_evidence(retrieval.chunks, config, plan.evidence_budget)[0] if retrieval.found else ()
-        emit("retrieval", _retrieval_payload(retrieval, given, config, plan))
+        given, expected_read_s = (), None
+        if retrieval.found:
+            given, evidence = choose_evidence(retrieval.chunks, config)
+            speed = measured_read_speed(config)
+            if speed:
+                expected_read_s = len(evidence.text) / speed
+        emit("retrieval", _retrieval_payload(retrieval, given, config, expected_read_s))
         if cancel.is_set():
             raise Cancelled
 
@@ -404,9 +404,7 @@ def _answer_question(
                 raise Cancelled
             emit("token", {"text": piece})
 
-        reply = answer(
-            question, retrieval, resources.get_llm(config), config, on_text=on_text, plan=plan, on_step=on_step
-        )
+        reply = answer(question, retrieval, resources.get_llm(config), config, on_text=on_text, on_step=on_step)
         log_query(reply, config)
         emit("answer", _answer_payload(reply))
     finally:
@@ -463,7 +461,7 @@ def _retrieval_payload(
     retrieval: RetrievalResult,
     given: tuple[ScoredChunk, ...],
     config: Config,
-    plan: AnswerPlan | None = None,
+    expected_read_s: float | None = None,
 ) -> dict[str, Any]:
     given_ids = {source.chunk.chunk_id for source in given}
     threshold = config.retrieval.rerank_score_threshold
@@ -480,15 +478,9 @@ def _retrieval_payload(
         "threshold": threshold,
         "elapsed_s": retrieval.elapsed_s,
         "timings": asdict(retrieval.timings),
-        "plan": None
-        if plan is None
-        else {
-            "time_limit_s": plan.time_limit_s,
-            "evidence_chars": plan.evidence_chars,
-            "read_chars_per_s": plan.read_chars_per_s,
-            "speed_measured": plan.speed_measured,
-            "shortened": plan.shortened,
-        },
+        # How long the answer model can be expected to read what it is given, from its
+        # speed on this machine so far. None until it has answered a question here.
+        "expected_read_s": expected_read_s,
         "sources": [
             _source_payload(rank, source, source.chunk.chunk_id in given_ids)
             for rank, source in visible
@@ -569,10 +561,8 @@ def _status(state: AppState) -> dict[str, Any]:
             "reranker_8_bit": config.reranker.quantize,
             "candidates": config.retrieval.candidates,
             "top_k": config.retrieval.top_k,
-            "rerank_time_limit_s": config.retrieval.rerank_time_limit_s,
             "evidence_char_budget": config.generation.evidence_char_budget,
             "evidence_score_ratio": config.generation.evidence_score_ratio,
-            "time_limit_s": config.generation.time_limit_s,
         },
     }
 

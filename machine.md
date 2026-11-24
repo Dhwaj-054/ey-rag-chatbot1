@@ -186,6 +186,8 @@ out of git, because it describes a company laptop and its network.
 | 2026-11-23 | The ranking step on its own (next section) | |
 | 2026-11-23 | Release 2026-11-23b: the chat screen in a browser, with stand-ins that read 150 characters and write 8 words a second, and a time limit of 20 s | The tracker's five steps with their times and the bar against the limit; an answer inside the limit (18 s); a long answer stopped at the limit, ending with a complete statement; a refused question with reading and writing marked as not needed |
 | 2026-11-23 | Release 2026-11-23b: adding documents in that browser, with a stand-in for Docling | An upload accepted and two refused (not a PDF); three files ingested with each step shown, one of them refused as looking like personal data; a run stopped; the document list and figures updated without a restart |
+| 2026-11-24 | Release 2026-11-24, without the time limits: `pytest -m "not slow"` | 555 passed |
+| 2026-11-24 | Release 2026-11-24: the chat screen in a browser, with the same stand-ins | A long answer written to its end (77 s, 38 statements, from all four passages); the tracker's bar by count for ranking and by the measured reading speed for reading ("About 27 s on this computer") |
 
 No document has been parsed, embedded or indexed on this laptop, and no real model has
 run on it.

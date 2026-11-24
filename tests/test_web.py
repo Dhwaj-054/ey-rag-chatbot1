@@ -156,8 +156,8 @@ def test_status_says_ready_when_everything_is_in_place(ready):
     assert status["settings"]["answer_model"] == "qwen2.5:7b"
     assert status["settings"]["answer_model_host"] is None  # on this machine
     assert status["settings"]["candidates"] == 15
-    assert status["settings"]["time_limit_s"] == 120
     assert status["settings"]["reranker_8_bit"] is True
+    assert "time_limit_s" not in status["settings"]  # an answer takes as long as it takes
     assert status["ingesting"] is False
 
 
@@ -277,7 +277,7 @@ def test_a_question_is_answered_as_a_stream_of_steps(ready):
     assert response.headers["content-type"].startswith("text/event-stream")
     stream = events(response)
     names = [name for name, _ in stream]
-    assert names[0] == "start" and stream[0][1] == {"time_limit_s": config.generation.time_limit_s}
+    assert names[0] == "start" and stream[0][1] == {}
     assert names[-2:] == ["answer", "done"]
     assert set(names[1:-2]) == {"step", "retrieval", "token"}
     # Every step is announced when it starts and when it ends, in the order it happens.
@@ -301,10 +301,10 @@ def test_a_question_is_answered_as_a_stream_of_steps(ready):
     ranking = [data for name, data in stream if name == "step" and data["name"] == "ranking"]
     assert ranking[0]["of"] == 3 and ranking[1]["done"] == 3 and ranking[2]["took_s"] >= 0
     reading = next(data for name, data in stream if name == "step" and data["name"] == "reading")
-    assert reading["passages"] >= 1 and reading["chars"] > 50 and reading["expected_s"] > 0
+    assert reading["passages"] >= 1 and reading["chars"] > 50
 
     retrieval = one(stream, "retrieval")
-    assert retrieval["plan"]["time_limit_s"] == 120 and retrieval["plan"]["speed_measured"] is False
+    assert retrieval["expected_read_s"] is None  # nothing has been answered here yet
     assert retrieval["found"] is True and retrieval["threshold"] == config.retrieval.rerank_score_threshold
     assert retrieval["timings"]["candidates"] == 3
     first = retrieval["sources"][0]
@@ -342,6 +342,23 @@ def test_a_question_is_answered_as_a_stream_of_steps(ready):
     assert logged.question == "What is the processing fee on a home loan?"
     assert logged.answer == final["text"]
     assert logged.timings["retrieval"]["candidates"] == 3
+
+
+def test_the_page_is_told_how_long_the_reading_can_be_expected_to_take(ready):
+    """From the second answer on: the first one is what the model's speed is measured from."""
+    client, _llm, config = ready
+    question = {"question": "What is the processing fee on a home loan?"}
+
+    first = events(client.post("/api/ask", json=question))
+    second = events(client.post("/api/ask", json=question))
+
+    logged = Database(config.paths.sqlite_path).recent_queries()[-1].timings
+    speed = logged["evidence_chars"] / logged["first_token_s"]
+    reading = next(data for name, data in second if name == "step" and data["name"] == "reading")
+    assert one(first, "retrieval")["expected_read_s"] is None
+    assert one(second, "retrieval")["expected_read_s"] == pytest.approx(reading["chars"] / speed, rel=0.01)
+    # It is an estimate for the reader. The model is given the same evidence either way.
+    assert one(first, "answer")["evidence_ids"] == one(second, "answer")["evidence_ids"]
 
 
 def test_sources_say_which_passages_went_to_the_model(ready):

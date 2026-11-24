@@ -13,4 +13,4 @@ The three that matter most:
 
 `HANDOVER.md` says what has been checked and what has not. `COPILOT_PROMPT.md` is the
 task of setting the build up on a machine that has the models. `COPILOT_UPDATE.md` is
-the task of bringing an existing copy up to release 2026-11-23b and measuring it.
+the task of bringing an existing copy up to release 2026-11-24 and measuring it.

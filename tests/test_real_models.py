@@ -9,9 +9,9 @@ them one at a time, in the order of this file: each group builds on the one befo
 
 Groups 6 and 7 were added on 2026-11-23 with the speed options and the new chat screen.
 Laptop A ran four of them that day (the OCR, 8-bit and chat screen tests) and they
-passed. Group 8 was added later the same day, with release 2026-11-23b: the search
-models run without the library's trial run, the time limit for an answer, and adding
-documents from the chat screen. Group 8 HAS NOT BEEN RUN ANYWHERE.
+passed. Group 8 was added with releases 2026-11-23b and 2026-11-24: the search models
+run without the library's trial run, the steps of an answer as the chat screen reports
+them, and adding documents from the chat screen. Group 8 HAS NOT BEEN RUN ANYWHERE.
 Run with ``-s`` to see the times the tests print.
 
 What has to be in place first (HANDOVER.md gives the commands):
@@ -380,10 +380,10 @@ def test_the_chat_screen_answers_a_question_with_the_real_models(tmp_path, temp_
     assert stats["queries"]["answered"] == 1
 
 
-# -- 8. Release 2026-11-23b: the two-minute limit, and adding documents from the screen ----
+# -- 8. Releases 2026-11-23b and 2026-11-24: faster search models, the tracker, adding documents
 #
-# Run with -s: the first four print the times that say whether the release did what it
-# was made for on this machine.
+# Run with -s: the first five print the times that say where an answer's time goes on
+# this machine, and what the changes to the search models saved.
 
 LONG_PASSAGES = [
     " ".join(f"Clause {number}.{part} sets the processing fee on product {number} at {number} percent of the amount." for part in range(1, 1 + length))
@@ -465,8 +465,8 @@ def served(events_text: str) -> list[tuple[str, dict | None]]:
     return found
 
 
-def test_an_answer_keeps_to_the_time_limit_once_the_reading_speed_is_measured(tmp_path, temp_config):
-    """Two questions through the chat screen's server. The second is planned from the first."""
+def test_the_chat_screen_reports_every_step_of_an_answer_with_its_time(tmp_path, temp_config):
+    """Two questions through the chat screen's server. Prints where the time of each went."""
     from starlette.testclient import TestClient
 
     from docqa import resources
@@ -481,8 +481,6 @@ def test_an_answer_keeps_to_the_time_limit_once_the_reading_speed_is_measured(tm
         raw["figures"]["describe"] = False
 
     config = temp_config(change)
-    limit = config.generation.time_limit_s
-    assert limit is not None, "generation.time_limit_s is null in config.yaml: there is no limit to test."
     config.paths.docs_dir.mkdir(parents=True)
     text_pdf(
         config.paths.docs_dir / "Schedule of Charges.pdf",
@@ -503,19 +501,24 @@ def test_an_answer_keeps_to_the_time_limit_once_the_reading_speed_is_measured(tm
         took = {
             data["name"]: data["took_s"] for name, data in stream if name == "step" and data["state"] == "end"
         }
+        expected = next(data for name, data in stream if name == "retrieval")["expected_read_s"]
         print(
-            f"\n    {label}: {final['latency_s']:.0f} s of {limit:g} s. "
+            f"\n    {label}: {final['latency_s']:.0f} s. "
             + ", ".join(f"{step} {seconds:.1f} s" for step, seconds in took.items())
             + f"; evidence {final['timings']['evidence_chars']} characters"
+            + (f"; the reading was expected to take {expected:.0f} s" if expected else "")
         )
         assert set(took) == {"question", "database", "ranking", "reading", "writing"}
+        ranking = [data for name, data in stream if name == "step" and data["name"] == "ranking"]
+        assert ranking[-1]["done"] == ranking[-1]["of"]  # every candidate was scored
 
-    plan = next(data for name, data in second if name == "retrieval")["plan"]
     final = next(data for name, data in second if name == "answer")
-    assert plan["speed_measured"] is True and plan["time_limit_s"] == limit
     assert "12" in final["text"]
-    # A quarter over is allowed for: the speed was measured on one answer only.
-    assert final["latency_s"] <= limit * 1.25, f"{final['latency_s']:.0f} s for a limit of {limit:g} s"
+    # From the second answer on, the page is told how long the reading will take. The
+    # estimate is for the reader: a first measurement is allowed to be well off.
+    expected = next(data for name, data in second if name == "retrieval")["expected_read_s"]
+    assert expected is not None and expected > 0
+    assert final["timings"]["first_token_s"] < expected * 3
 
 
 def test_a_pdf_added_from_the_chat_screen_is_ingested_and_answered_from(tmp_path, temp_config):

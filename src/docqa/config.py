@@ -86,6 +86,9 @@ class LLMConfig(_Section):
     """The API key variable for ``vision_base_url``. Read only when that is set."""
     answer_model: NonEmptyStr
     vision_model: NonEmptyStr
+    reasoning_effort: NonEmptyStr | None = None
+    """Sent with every request to the answer model, if set. ``"none"`` switches off the
+    thinking of a model that thinks before it answers."""
     temperature: float = Field(ge=0.0, le=2.0)
     max_tokens: int = Field(gt=0)
     connect_timeout_s: float = Field(gt=0)
@@ -197,9 +200,6 @@ class RetrievalConfig(_Section):
     candidates: int = Field(gt=0)
     top_k: int = Field(gt=0)
     rrf_k: int = Field(gt=0)
-    rerank_time_limit_s: float | None = Field(default=None, gt=0)
-    """Ranking stops after this many seconds and uses the candidates scored by then.
-    ``None``: every candidate is scored."""
     rerank_score_threshold: float | None = None
     default_access_group: NonEmptyStr
 
@@ -214,21 +214,6 @@ class GenerationConfig(_Section):
     not_found_message: NonEmptyStr
     evidence_char_budget: int = Field(gt=0)
     evidence_score_ratio: float = Field(ge=0.0, le=1.0)
-    time_limit_s: float | None = Field(default=None, gt=0)
-    """The longest an answer should take, from the question to its last word.
-    ``None``: no limit. See ``docqa.generate.budget``."""
-    writing_reserve_s: float = Field(ge=0)
-    """Of ``time_limit_s``, the seconds kept for writing the answer."""
-    min_evidence_chars: int = Field(gt=0)
-    """The evidence is never cut below this to fit the time limit."""
-    read_chars_per_s: float = Field(gt=0)
-    """How fast the answer model reads, assumed until this machine has measured it."""
-
-    @model_validator(mode="after")
-    def _reserve_fits_in_the_limit(self) -> GenerationConfig:
-        if self.time_limit_s is not None and self.writing_reserve_s >= self.time_limit_s:
-            raise ValueError("writing_reserve_s must be smaller than time_limit_s")
-        return self
 
 
 class UIConfig(_Section):

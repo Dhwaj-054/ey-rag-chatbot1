@@ -29,9 +29,8 @@ def batches_by_length(lengths: Sequence[int], batch_size: int) -> list[list[int]
     passages, batches in the order the passages arrived took a quarter longer than
     batches sorted by length.
 
-    The batches are then put in the order of the earliest position each one holds.
-    When the inputs arrive most promising first, a caller that stops early has scored
-    the most promising one, and leaves out a batch whose best member came late.
+    The batches are then put in the order of the earliest position each one holds,
+    so that the work goes roughly in the order the inputs arrived.
     """
     by_length = sorted(range(len(lengths)), key=lambda position: (-lengths[position], position))
     batches = [by_length[start : start + batch_size] for start in range(0, len(by_length), batch_size)]

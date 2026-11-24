@@ -20,10 +20,12 @@ The code is complete and its fast tests pass.
 - Release 2026-11-23 brought a new chat screen, shorter prompts, faster ingestion, and
   a record of where the time of each answer goes. It ran on that laptop the same day.
   Answers were still too slow.
-- Release 2026-11-23b (this one) gives an answer a time limit of two minutes, shows a
-  progress tracker while an answer is made, and lets PDFs be added from the chat
-  screen. **It has not yet been run with the real models.** Whether an answer really
-  ends within two minutes on that laptop has to be measured there.
+- Release 2026-11-24 (this one) shows a progress tracker while an answer is made,
+  lets PDFs be added from the chat screen, and runs the two search models with less
+  wasted work. **It has not yet been run with the real models.** A time limit of two
+  minutes for an answer was built on 2026-11-23 and taken out the next day: it could
+  only be kept by giving the answer model less to read. What can make answers faster
+  without that is in `notes/2026-11-24-faster-answers-without-limits.md`.
 
 `HANDOVER.md` says what was checked and what was not, how to set the project up, how to
 update an existing copy, and what to try to make it faster.
@@ -43,15 +45,13 @@ Ingestion, once per document:
 A question:
 
 1. The question is embedded. A dense and a sparse search each return candidates.
-2. The two lists are merged by reciprocal rank fusion. The best 15 are reranked, for
-   at most 20 seconds, and the best 4 are kept.
+2. The two lists are merged by reciprocal rank fusion. The best 15 are reranked, and
+   the best 4 are kept.
 3. If even the best is weak, the chatbot says it found nothing. The answer model is
    not called.
 4. Otherwise the answer model gets the passages among the 4 that scored well enough,
-   cut to what it can read in the time that is left of the two minutes. It writes the
-   answer from them and cites each statement. The screen shows each citation as
-   `[document title, p. N]`. When the two minutes are up the writing stops, at the end
-   of a complete statement.
+   writes the answer from them and cites each statement. The screen shows each
+   citation as `[document title, p. N]`.
 5. Every citation is checked against the passages the model was given. The question,
    the passages, the answer and the time each step took are logged.
 
@@ -71,8 +71,9 @@ Run from the project folder with the virtual environment active.
 | `python -m docqa.evaluate --suggest-threshold` | Proposes the refusal threshold from the test questions |
 | `python -m docqa.evaluate --retrieval-only` | Judges the search alone, without the answer model |
 | `python -m docqa.evaluate` | Runs the test questions and writes the results |
+| `python -m docqa.evaluate --answer-model NAME` | The same with another answer model, to compare two models on the same questions |
 | `python -m docqa.web --open` | Starts the chat screen at http://127.0.0.1:8000 and opens it in the browser |
-| `python -m docqa.stats` | Prints what is indexed and how long questions have been taking |
+| `python -m docqa.stats` | Prints what is indexed and how long questions have been taking, for each answer model as well |
 | `python scripts/build_manifest.py --force` | Rebuilds `manifest.csv` from the RBI index workbook |
 | `python scripts/compare_with_release.py <folder>` | Lists what was changed in an older copy of the project, before it is replaced by this one |
 
@@ -103,8 +104,8 @@ documents, pages, passages, questions asked, and the typical time of an answer a
 each of its parts.
 
 An answer appears word by word. Above it a tracker shows the five steps of an answer
-(question, search, ranking, reading, writing): which one is in hand, how long each
-took, and the time used of the limit. The passages it was written from are listed
+(question, search, ranking, reading, writing): which one is in hand, how far it is,
+and how long each took. The passages it was written from are listed
 before the first word arrives, each with its page, its score and whether it was given
 to the model. Tables are shown as tables and figures as pictures. Stop ends an answer
 that is taking too long.
@@ -140,6 +141,7 @@ config.local.yaml     optional: the settings that differ on this machine (not in
 | File | What it is for |
 |---|---|
 | `HANDOVER.md` | Current state, setup, updating an existing copy, making it faster |
+| `notes/2026-11-24-faster-answers-without-limits.md` | What was looked at to make answers faster without cutting what the models read: other models, other flows, and what each costs |
 | `CLAUDE.md` | The decisions and rules of the project |
 | `design.md` | The methods, explained in detail |
 | `machine.md` | The two laptops in use, what was measured on each, and traps found in the installed software |
@@ -166,10 +168,6 @@ paths:
 
 That file is laid over `config.yaml` when the settings are loaded, and it is not in
 git, so an update of the project leaves it alone.
-
-`generation.time_limit_s` is the longest an answer should take (120). `null` means no
-limit. The limit is kept by giving the answer model less to read, so a shorter limit
-means answers from less evidence.
 
 One setting needs choosing for each set of documents:
 `retrieval.rerank_score_threshold`. It decides when the chatbot says it found nothing.

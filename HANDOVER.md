@@ -1,6 +1,7 @@
 # Handover: setting up, updating and speeding up the build
 
-Written on 2026-11-20. Updated on 2026-11-23 with releases 2026-11-23 and 2026-11-23b.
+Written on 2026-11-20. Updated on 2026-11-23 with releases 2026-11-23 and 2026-11-23b,
+and on 2026-11-24 with release 2026-11-24.
 
 Read this before running anything. It says what exists, what has and has not been
 checked, where the time of an answer goes and what to try about it, how to update a
@@ -33,10 +34,16 @@ folder outside the project, and the speed settings were lowered (15 candidates, 
 passages kept, 8,000 characters of evidence, 400 tokens). Answers were still found
 too slow. How long they took with those settings was not recorded.
 
-**Release 2026-11-23b, this one, has not been run with a real model.** It was asked
-for on 2026-11-23: an answer in at most two minutes, a progress tracker on the answer,
-and adding PDFs from the chat screen. Everything in the table marked "stand-ins" was
-tested with fakes in place of the models.
+**Release 2026-11-24, this one, has not been run with a real model.** It is release
+2026-11-23b without its time limits. Release 2026-11-23b was asked for on 2026-11-23:
+an answer in at most two minutes, a progress tracker on the answer, and adding PDFs
+from the chat screen. The two minutes could only be kept by giving the answer model
+one or two passages to read where four were found. The project owner did not want
+that, so on 2026-11-24 the limits were taken out, and what makes an answer faster
+without giving the models less to read was looked into instead
+(`notes/2026-11-24-faster-answers-without-limits.md`). It is not recorded whether
+release 2026-11-23b was installed on Laptop A in between. Everything in the table
+marked "stand-ins" was tested with fakes in place of the models.
 
 | Part | Code | How it was checked | Never checked |
 |---|---|---|---|
@@ -52,73 +59,72 @@ tested with fakes in place of the models.
 | Embedding and reranking, run directly | `index/embedder.py`, `retrieve/reranker.py`, `batching.py` | Tests against the library itself on a small model of the same kind: the same numbers, one model run fewer. Timed on Laptop B with a stand-in of the reranker's size | **With the real models.** Three slow tests do it |
 | 8-bit weights | `quantize.py` | Laptop A's real-model tests, on short texts | How it changes which passages are found on real questions |
 | Vector store | `index/store.py` | Tests against the real Qdrant client; timed with 79, 3,000 and 20,000 passages (`machine.md`) | |
-| Retrieval, with the limit on ranking time | `retrieve/__init__.py` | Tests: real Qdrant, stand-in models, a clock that the test moves | Search quality; how many candidates the limit leaves on Laptop A |
-| Answers and citations | `generate/` | Tests with a faked model server. Real answers on Laptop A with release 2026-11-23 | The shorter instruction (prompt version 3) |
-| The time limit for an answer | `generate/budget.py` | Tests with a faked model server and a clock that the test moves; watched in a browser with stand-ins that read and write at fixed speeds | **Whether an answer on Laptop A really ends within two minutes** |
+| Retrieval, reporting each step as it happens | `retrieve/__init__.py` | Tests: real Qdrant, stand-in models | Search quality |
+| Answers and citations | `generate/` | Tests with a faked model server. Real answers on Laptop A with release 2026-11-23 | |
+| Trying another answer model | `evaluate.py` (`--answer-model`), `llm.py` (`llm.reasoning_effort`), `stats.py` | Tests with a faked model server | With a second real model |
 | Chat screen and its progress tracker | `web/server.py`, `web/static/` | Tests through the server's own addresses; opened in a browser on Laptop B with stand-in models | With real answers |
 | Adding documents from the screen | `web/ingestion.py` | Tests through the server's own addresses with the real pipeline, register and index; done in a browser on Laptop B with a stand-in for Docling | With Docling and the real models; memory use while it runs |
 | Statistics | `stats.py`, `db.py` | Tests | The new figures on a real query log |
 | Evaluation | `evaluate.py` | Tests with stand-ins | On real questions. `eval/questions.csv` has no rows yet |
 | Comparing an older copy | `scripts/compare_with_release.py` | Tests; run on the 2026-11-20 zip and on the code from Laptop A | |
 
-Test counts on 2026-11-23: 574 fast tests pass on Laptop B (`pytest -m "not slow"`). 21
+Test counts on 2026-11-24: 555 fast tests pass on Laptop B (`pytest -m "not slow"`). 21
 tests need the real models (`pytest -m slow`, in `tests/test_real_models.py`). Laptop A
-ran four of them. The six of group 8 are new with this release and have been run
-nowhere. A failure there may be a mistake in the test as easily as in the code.
+ran four of them. The six of group 8 are new since release 2026-11-23 and have been
+run nowhere. A failure there may be a mistake in the test as easily as in the code.
 
-## What changed on 2026-11-23b
+## What changed on 2026-11-23b and 2026-11-24
 
-1. **An answer has a time limit:** `generation.time_limit_s: 120`. Two things keep to
-   it. After the search, the evidence is cut to what the answer model can read in the
-   time that is left, at the reading speed measured on this machine from the answers
-   already given. And when the time is up, the writing stops at the end of the last
-   complete statement, and the answer says that it was stopped. The reading itself is
-   never interrupted, so the first answers on a machine, before a speed is measured,
-   can run over. "Making it faster" below says what two minutes buy.
-2. **Ranking does a quarter less work.** The FlagEmbedding library runs its longest
+Release 2026-11-23b also gave an answer a time limit of 120 seconds and ranking one of
+20 seconds. **Both limits were taken out on 2026-11-24.** An answer is written from
+every passage that scores well enough, every candidate is ranked, and the model writes
+to its end. What is listed here is what stayed and what was added on 2026-11-24.
+
+1. **Ranking does a quarter less work.** The FlagEmbedding library runs its longest
    batch of passages once as a trial, throws the result away and runs it again. The
    reranker is now run from the project's own loop (`retrieve/reranker.py`), with the
-   inputs prepared by the library's own functions. Timed on Laptop B with a stand-in
-   model of the reranker's size, for 15 passages: 42 s the library's way, 33 s without
-   the trial run. With 8-bit weights: 22 s and 14 s.
-3. **The reranker runs with 8-bit weights:** `reranker.quantize: true`. Laptop A's own
-   test showed it ranking twice as fast with the answering passage still first. What
-   it does to the ranking of real questions has not been measured. The threshold of
-   0.50 was a temporary value before and is one now.
-4. **Ranking has a time limit of its own:** `retrieval.rerank_time_limit_s: 20`. The
-   candidates that hybrid search placed highest are scored first. When the time is up,
-   the rest are left out, and the answer's tracker says how many were scored.
-5. **The embedding model is run the same way.** Ingestion embeds one document at a
+   inputs prepared by the library's own functions, so the scores are the same. Timed
+   on Laptop B with a stand-in model of the reranker's size, for 15 passages: 42 s the
+   library's way, 33 s without the trial run. With 8-bit weights: 22 s and 14 s.
+2. **The reranker runs with 8-bit weights:** `reranker.quantize: true`. Laptop A's own
+   test showed it ranking twice as fast with the answering passage still first. It is
+   the one speed setting that is on and can change a ranking: what it does to real
+   questions has not been measured. `false` gives full precision at about twice the
+   time. The threshold of 0.50 was a temporary value before and is one now.
+3. **The embedding model is run the same way.** Ingestion embeds one document at a
    time. A document of five chunks was three runs of the model; it is two now.
-6. **The answer model is given its instructions when the screen starts.** Ollama keeps
+4. **The answer model is given its instructions when the screen starts.** Ollama keeps
    what it has read of the last request, and every question starts with the same
    instructions, so the first question does not wait for them to be read.
-7. **Every answer shows a progress tracker:** five steps (question, search, ranking,
-   reading, writing), the one in hand with a running clock, ranking with a count, a
-   bar for the time used of the limit, and one line that says what is happening. The
-   server sends each step as it happens and the page reads them with the browser's
-   Streams API.
-8. **PDFs can be added from the chat screen:** "+ Add" in the side panel. Files are
+5. **Every answer shows a progress tracker:** five steps (question, search, ranking,
+   reading, writing), the one in hand with a running clock, and a bar for how far that
+   step is: exact for ranking, which counts its passages, and by the answer model's
+   measured reading speed for reading. The server sends each step as it happens and
+   the page reads them with the browser's Streams API. The estimate is for the reader:
+   nothing is cut or stopped because of it.
+6. **PDFs can be added from the chat screen:** "+ Add" in the side panel. Files are
    dropped or chosen there and copied to `data/uploads`, or ticked in the list of PDFs
    that lie in the documents folder and were never ingested. The run shows each file
    and each step, can be stopped, and refuses a file that looks like personal data, as
    the command line does. Questions wait while it runs. The screen no longer has to be
    stopped to ingest.
-9. **Settings of one machine go in `config.local.yaml`,** next to `config.yaml`, with
+7. **Settings of one machine go in `config.local.yaml`,** next to `config.yaml`, with
    only the keys that differ. It is not in git, so an update of the project does not
    overwrite it and it never reaches the other laptop. Laptop A needs it for the folder
    its documents are in.
-10. **A document keeps its name whichever part of the documents folder is ingested.**
-    The fix made on Laptop A named a file by its place below the folder given on the
-    command line. For a sub-folder of the documents folder that gave a known document a
-    second name. Inside the documents folder the name is now always the place below
-    that folder; a folder elsewhere is named as on Laptop A. `--prune` no longer
-    removes documents whose files are in another of the folders.
-11. **The instruction to the answer model asks for at most four sentences** or a short
-    list (prompt version 3).
-12. **The statistics show** the ranking time, the answer model's reading speed and how
-    many answers were stopped at the limit.
-13. **A request that another website makes the browser send is refused** (asking,
+8. **A document keeps its name whichever part of the documents folder is ingested.**
+   The fix made on Laptop A named a file by its place below the folder given on the
+   command line. For a sub-folder of the documents folder that gave a known document a
+   second name. Inside the documents folder the name is now always the place below
+   that folder; a folder elsewhere is named as on Laptop A. `--prune` no longer
+   removes documents whose files are in another of the folders.
+9. **Another answer model can be tried and measured without changing the code**
+   (2026-11-24): `python -m docqa.evaluate --answer-model NAME` runs the test questions
+   with it, `python -m docqa.stats` shows each answer model's times side by side, and
+   `llm.reasoning_effort` switches off the thinking of a model that thinks before it
+   answers.
+10. **The statistics show** the ranking time and the answer model's reading speed.
+11. **A request that another website makes the browser send is refused** (asking,
     uploading, ingesting).
 
 No document has to be ingested again for this release.
@@ -202,54 +208,73 @@ through `qdrant.url`.
 
 ## Making it faster
 
-**What two minutes buy.** The limit is divided like this, with the settings of this
-release:
+**There is no limit on the time of an answer.** A limit was built on 2026-11-23 and
+taken out the next day, because it could only be kept by giving the models less to
+read. What follows makes an answer faster without that, or says plainly what it costs.
+`notes/2026-11-24-faster-answers-without-limits.md` has the research behind it, with
+its sources.
 
-| Part | Time | Set by |
+**Where the time goes now** (estimates for Laptop A; its own figures are in
+`python -m docqa.stats`):
+
+| Step | Time | What decides it |
 |---|---|---|
-| Search: the question, the database, ranking | up to about 20 s | `retrieval.rerank_time_limit_s`, `retrieval.candidates` |
-| The answer model writes | at least 35 s | `generation.writing_reserve_s`: about 150 tokens at 4 to 5 tokens a second |
-| The answer model reads | what is left: about 65 s | the evidence is cut to fit |
+| Question and database | under a second | |
+| Ranking 15 passages | 15 to 25 s | the reranker, on the processor |
+| The answer model reads | about 2 minutes | about 2,000 tokens of evidence at about 15 tokens a second |
+| The answer model writes | 20 to 50 s | 100 to 200 tokens at 4 to 5 tokens a second |
 
-How much evidence fits in 65 s depends on the reading speed, which only Laptop A can
-measure. At 45 characters a second, the cautious value assumed until there is a
-measurement, it is about 2,900 characters: one passage, or most of one. At 80 it is
-about 5,200: two. That is the price of the limit on this processor: the answer is
-written from one or two passages where release 2026-11-20 gave the model six. The
-sources list shows which passages were found and which the model was given, and the
-answer carries a note when something was cut.
-
-The limit is an aim that the code plans for, not a guarantee. The reading is never
-interrupted, so an answer runs over when the model reads more slowly than it was
-measured to, and the first answers on a machine are planned from the assumed speed.
-What is guaranteed is that the writing stops when the time is up, but never sooner than
-35 s after the first word. To have no limit, set `generation.time_limit_s: null`.
+About three minutes, two of them the 7B model reading. So the step that matters is the
+reading, and the way to make it faster without less evidence is a faster answer model.
 
 **Measure first.** Ask the same three questions before and after each change. The
-tracker on each answer shows the time of every step, and this prints the medians:
+tracker on each answer shows the time of every step, and this prints the medians, for
+all answers and for each answer model on its own:
 
 ```powershell
 python -m docqa.stats
 ```
 
-**Switched on in this release:**
+**Switched on:**
 
 | What | Setting | What it costs |
 |---|---|---|
-| The time limit | `generation.time_limit_s: 120` | Less evidence for the answer model, and an answer that may be stopped |
 | Ranking without the library's trial run | none (`retrieve/reranker.py`) | Nothing that is known: the scores are the same |
 | 8-bit reranker | `reranker.quantize: true` | Scores shift slightly. Not measured on real questions |
-| Limit on ranking time | `retrieval.rerank_time_limit_s: 20` | Candidates that hybrid search placed lowest may not be scored |
 | Instructions given at start | `ui.warm_up: true` | Nothing |
-| Shorter answers asked for | none (`generate/prompt.py`, version 3) | An answer that needs more than four sentences or a short list |
 | From Laptop A, 2026-11-23 | `candidates: 15`, `top_k: 4`, `evidence_char_budget: 8000`, `max_tokens: 400` | Fewer passages found and given |
 | From Laptop A, 2026-11-23 | Ollama keeps a model in memory for 30 minutes: the user environment variable `OLLAMA_KEEP_ALIVE=30m` | Memory stays in use |
 
 **To try on Laptop A, most promising first:**
 
-1. **How many processor threads Ollama uses.** Laptop A's processor has 2 fast cores
-   and 8 slow ones. Ollama chooses a number of threads by itself, and its documentation
-   does not say what it chooses on such a processor. Find out what is fastest:
+1. **A smaller answer model of the same family.** `Qwen3-4B-Instruct-2507` is about
+   half the size of `qwen2.5:7b`, so it should read and write in about half the time:
+   an answer of three minutes in a minute and a half to two, from all the evidence. A
+   2026 study that ran 17 small models as the answering model on a processor found it
+   the best trade of quality against time, with scores close to the 8B model of its
+   family at a fifth of the time. Whether it answers these documents as well as the 7B
+   has to be seen on real questions. **This is the project owner's decision:**
+   `CLAUDE.md` lists the models that may be used, and the model has to be downloaded
+   (2.5 GB). Its licence is Apache 2.0 according to search results; check its page.
+
+   ```powershell
+   ollama pull qwen3:4b-instruct-2507-q4_K_M
+   ```
+
+   Compare the two on the test questions, without changing a setting:
+
+   ```powershell
+   python -m docqa.evaluate --answer-model qwen3:4b-instruct-2507-q4_K_M
+   ```
+
+   To use it in the chat screen, name it in `config.local.yaml`
+   (`llm: answer_model: qwen3:4b-instruct-2507-q4_K_M`). Take a name with "instruct"
+   in it. The other Qwen3 models think before they answer, which takes longer than
+   the answer; for those, set `llm.reasoning_effort: none` as well.
+2. **How many processor threads Ollama uses.** Free, and it changes nothing about the
+   answers. Laptop A's processor has 2 fast cores and 8 slow ones. Ollama chooses a
+   number of threads by itself, and reports for such processors go both ways. Find
+   out what is fastest:
 
    ```powershell
    ollama run qwen2.5:7b --verbose
@@ -275,18 +300,29 @@ python -m docqa.stats
    the same model file, so nothing is downloaded. Ollama's documentation gives a
    Modelfile as the way to set such things for its OpenAI-compatible address, which
    is the one this project uses.
-2. **Fewer candidates:** `retrieval.candidates: 10`. With the limit on ranking time
-   this only matters if the tracker shows that not all 15 are scored in 20 s.
-3. **More or less time for writing:** `generation.writing_reserve_s`. If answers are
-   never stopped, lower it and the model is given more to read. If they often are,
-   raise it, or lower `llm.max_tokens`.
+3. **A smaller reranker.** `Alibaba-NLP/gte-reranker-modernbert-base` is about a
+   quarter of the size of the present one (Apache 2.0 according to its page), so
+   ranking should take about a quarter of the time. Ranking is a small part of an
+   answer, so this comes after 1. It is a setting (`reranker.model`) and a download,
+   and the owner's decision. Another reranker has another scale of scores: choose the
+   threshold again and judge the search again (`python -m docqa.evaluate
+   --suggest-threshold`, `--retrieval-only`).
 4. **8-bit embedding model:** `embedding.quantize: true`. It does little for a
    question. It shortens ingestion: embedding was 384 s of the 404 s that bringing 15
    documents up to date took. The vectors change, so every document is embedded again
    once, and the stored vectors and the question's must be made with the same setting.
-5. **Shorter reranker input:** `reranker.max_length: 512`. The reranker then judges a
-   long passage by its first part only. `config.py` refuses a value below
-   `chunking.max_tokens` on purpose, so treat it as a last resort.
+
+**Faster, at a cost to what is found or read.** These are the owner's to weigh, with
+test questions to judge them by:
+
+- Fewer candidates (`retrieval.candidates`), fewer passages kept (`retrieval.top_k`),
+  less evidence (`generation.evidence_char_budget`).
+- Smaller passages (`chunking`): the model reads half as much if passages are half the
+  size. It changes what is found, every document has to be ingested again, and
+  `CLAUDE.md` fixes the sizes.
+- Shorter reranker input (`reranker.max_length: 512`): the reranker then judges a long
+  passage by its first part only. `config.py` refuses a value below
+  `chunking.max_tokens` on purpose.
 
 For ingestion:
 
@@ -298,19 +334,9 @@ For ingestion:
 4. `ingestion.group_files` sets how many files are read before the models change. A
    larger group means fewer model loads; a smaller one means results sooner.
 
-**What settings cannot do.** With a 7B model on this processor, two minutes means one
-or two passages of evidence. More evidence in the same time needs a faster model
-server. There are three ways, and each is the project owner's decision because
-`CLAUDE.md` fixes the stack:
-
-- **A smaller answer model.** A smaller model reads and writes faster, roughly in
-  proportion to its size, and follows the rules for citing less reliably. `llm.answer_model`
-  is the only setting. `CLAUDE.md` lists the models that may be used and excludes the
-  3B and 72B sizes of Qwen2.5 for their licences, so a new one needs its licence
-  checked and the owner's agreement, and then `python -m docqa.evaluate` on real
-  questions.
-- **A GPU server with vLLM,** which is the plan in `CLAUDE.md`.
-- **A hosted endpoint,** next section.
+**What settings cannot do.** A 7B model on this processor takes about two minutes to
+read four passages. Answers in seconds need other hardware: a GPU server with vLLM,
+which is the plan in `CLAUDE.md`, or a hosted endpoint, next section.
 
 ## Answers from a hosted endpoint
 
@@ -364,8 +390,7 @@ Before choosing one:
 - The threshold does not change: the reranker still runs on the machine.
 
 What it would change, as an estimate: the answer model's share of an answer would
-become seconds, and the time limit would leave room for all the evidence. The search
-would stay as it is.
+become seconds. The search would stay as it is.
 
 A GPU server of your own with vLLM is the other route, and the one `CLAUDE.md` plans.
 It uses the same four settings, and nothing goes to a third party. vLLM serves one
@@ -377,9 +402,11 @@ model per server, which is what `vision_base_url` is for.
 
 Stop the chat screen first. Then get the code, in one of three ways:
 
-**a. From the git bundle** (a single file, `docqa-update-2026-11-23b.bundle`). It holds
-this release as one commit on top of the last commit that Laptop A pushed to GitHub
-(`81bea90`, "Reduce retrieval and answer latency"). In the project folder on Laptop A:
+**a. From the git bundle** (a single file, `docqa-update-2026-11-24.bundle`). It holds
+two commits on top of the last commit that Laptop A pushed to GitHub (`81bea90`,
+"Reduce retrieval and answer latency"): release 2026-11-23b, and this release on top
+of it. So it fits whether or not the earlier bundle was already pulled. In the project
+folder on Laptop A:
 
 ```powershell
 git status
@@ -388,13 +415,13 @@ git status
 It should say `On branch speed-and-new-ui`. Commit anything it lists as changed, then:
 
 ```powershell
-git pull "<path to>\docqa-update-2026-11-23b.bundle" speed-and-new-ui
+git pull "<path to>\docqa-update-2026-11-24.bundle" speed-and-new-ui
 ```
 
 **b. From GitHub**, if the branch has been pushed there from another machine:
 `git pull origin speed-and-new-ui`.
 
-**c. From the zip** (`docqa-code-2026-11-23b.zip`), if the project folder is not a git
+**c. From the zip** (`docqa-code-2026-11-24.zip`), if the project folder is not a git
 repository. Do not extract it over the old folder. Extract it to a new folder, run
 `python scripts\compare_with_release.py "<old folder>"` there to see what the old copy
 changed, move `data\` and `models\` from the old folder to the new one, and activate
@@ -423,18 +450,18 @@ python -m pip install --no-deps -e .
 python -m docqa.check_env
 ```
 
-It should pass all its checks and end with notes that name the documents folder (about
-600 PDFs) and the time limit.
+It should pass all its checks and end with a note that names the documents folder
+(about 600 PDFs).
 
 ```powershell
 pytest -m "not slow"
 ```
 
-574 should pass. Then the real-model tests that are new, which also print the times
+555 should pass. Then the real-model tests that are new, which also print the times
 that matter:
 
 ```powershell
-pytest -m slow -k "run_directly or instructions_twice or time_limit or added_from_the_chat_screen" -s
+pytest -m slow -k "run_directly or instructions_twice or every_step or added_from_the_chat_screen" -s
 ```
 
 No document has to be ingested again. Start the screen:
@@ -443,9 +470,8 @@ No document has to be ingested again. Start the screen:
 python -m docqa.web --open
 ```
 
-Ask three questions and watch the tracker. The first answers are planned from an
-assumed reading speed and may run over two minutes; from the second one on, the speed
-measured on this laptop is used. Then:
+Ask three questions and watch the tracker: it shows the time of every step. From the
+second answer on it also says how long the reading can be expected to take. Then:
 
 ```powershell
 python -m docqa.stats
@@ -551,7 +577,7 @@ Every line should say PASS.
 pytest -m "not slow"
 ```
 
-574 should pass. Then the real-model tests, one group at a time, in this order:
+555 should pass. Then the real-model tests, one group at a time, in this order:
 
 ```powershell
 pytest -m slow -k "ollama or answer_model or vision"
@@ -633,35 +659,30 @@ inside the screen's own program.
 
 In rough order of likelihood. Each item names the file to look at.
 
-**New in release 2026-11-23b. None of it has met a real model.**
+**New since release 2026-11-23. None of it has met a real model.**
 
-a. **An answer that runs over the limit** (`generate/budget.py`, `Database.read_speed`
-   in `db.py`). The evidence is sized from the reading speed measured so far: the
-   characters of evidence of an answer divided by its wait for the first word, as a
-   median over the last 20 answers. If answers keep running over, compare "Reading" in
-   the tracker with what its line said to expect ("About 50 s on this computer"). A
-   large gap means the model was not in memory, or was reading its instructions again
-   (item c). `python -m docqa.stats` shows the speed that is used.
-b. **The search models run from the project's own loop** (`retrieve/reranker.py`,
+a. **The search models run from the project's own loop** (`retrieve/reranker.py`,
    `index/embedder.py`). If the library's functions are not where this release expects
    them, the log says "run through the library's own call from now on" once and
    everything works as before, only slower. The slow tests named `run_directly` compare
    the numbers with the library's on the real models. Should they differ, set
    `self.direct = False` in the two classes and report it.
-c. **The answer model reading its instructions only once** (`web/server.py`,
+b. **The answer model reading its instructions only once** (`web/server.py`,
    `AppState.warm_up`). This relies on Ollama keeping what it read of the previous
    request. The slow test named `instructions_twice` checks it by timing. If it fails,
    the first answer after a start is slower and nothing else is wrong.
-d. **Ingestion inside the chat screen** (`web/ingestion.py`). Before a run the search
+c. **Ingestion inside the chat screen** (`web/ingestion.py`). Before a run the search
    models are dropped from memory and Ollama is left to swap the answer model for the
    vision model; afterwards the search models are loaded again. Watch Task Manager
    during the first run with figures. If memory runs short, untick "Describe figures".
    Docling is loaded inside the screen's program for the first time here.
-e. **What is kept of an answer that was stopped** (`complete_part` in
-   `generate/budget.py`). It keeps the text up to the last complete reference. If
-   stopped answers end oddly, look there. If many answers are stopped, raise
-   `generation.writing_reserve_s` or lower `llm.max_tokens`.
-f. **The 8-bit reranker and the threshold.** Scores shift a little, and the threshold of
+d. **The tracker's estimate of the reading time** (`Database.read_speed` in `db.py`,
+   `web/static/app.js`). It is the characters of evidence of an answer divided by its
+   wait for the first word, as a median over the last 20 answers of the answer model.
+   If the line "About 50 s on this computer" is far off, the model was not in memory
+   at the time, or was reading its instructions again (item b). Nothing depends on the
+   estimate but the bar.
+e. **The 8-bit reranker and the threshold.** Scores shift a little, and the threshold of
    0.50 was never chosen from real questions. A question that is refused although its
    passage is in the documents, or answered from an unrelated passage, points here:
    write questions in `eval/questions.csv` and run
@@ -716,9 +737,8 @@ code could be written. Each is easy to change.
 | What identifies a document | Its place below the documents folder (`paths.docs_dir`), whichever part of that folder is ingested. A file added from the chat screen is `uploads/<file>`. A file in a folder elsewhere is named by its place below that folder. An edited file replaces its chunks; a renamed file is a new document | `ingest/documents.py` |
 | Which page is cited | Chunks record where each later page begins, and the model is shown those places, so it can cite the page a fact is on | `Chunk.page_marks`, `generate/prompt.py` |
 | How the model names a source | By a label, `E1`, `E2` and so on, with the page. The code replaces the label with the document's title | `generate/citations.py` |
-| Which passages the model gets | Of those kept, those scoring at least half as well as the best, within the evidence budget and, with a time limit, within what the model can read in the time left | `generation.evidence_score_ratio`, `generation.evidence_char_budget`, `generate/budget.py` |
-| How long an answer may take | 120 s: the evidence is cut to fit, and the writing stops when the time is up, at the end of a complete statement. The reading is not interrupted | `generation.time_limit_s`, `generate/budget.py` |
-| How long ranking may take | 20 s: the candidates hybrid search placed highest are scored first, the rest are left out | `retrieval.rerank_time_limit_s`, `retrieve/__init__.py` |
+| Which passages the model gets | Of those kept, those scoring at least half as well as the best, within the evidence budget | `generation.evidence_score_ratio`, `generation.evidence_char_budget` |
+| How long an answer may take | As long as it takes. Limits of 120 s for an answer and 20 s for ranking were built on 2026-11-23 and taken out the next day: they could only be kept by giving the models less to read | `notes/2026-11-24-faster-answers-without-limits.md` |
 | What is embedded | The document title, then the headings above the chunk, then its text | `index.searchable_text` |
 | Scale of rerank scores | Normalised, 0 to 1. The threshold is on that scale | `reranker.normalize` |
 | When OCR runs | Only for a document that has a page with an image and almost no text | `parsing.ocr`, `ingest/parser.py` |
@@ -739,6 +759,7 @@ Still open:
 - Where `data/` lives when the project folder is synced by OneDrive.
 - Which 10 to 20 documents form the prototype set.
 - Whether answers may come from a hosted endpoint (see that section).
+- Whether a smaller answer model may be used ("Making it faster", item 1).
 
 ## Using an AI coding assistant on this project
 

@@ -141,12 +141,6 @@ def setup_notes(config: Config) -> list[str]:
             f"somewhere else on this machine, name that folder in config.local.yaml:\n"
             f"    paths:\n      docs_dir: \"D:/where/the/documents/are\""
         )
-    limit = config.generation.time_limit_s
-    if limit is not None:
-        notes.append(
-            f"an answer is planned to take at most {limit:g} s (generation.time_limit_s). "
-            f"'python -m docqa.stats' shows whether the answers given so far kept to it."
-        )
     return notes
 
 

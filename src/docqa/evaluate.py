@@ -45,7 +45,6 @@ from docqa import resources
 from docqa.config import Config, ConfigError, load_config
 from docqa.db import Database
 from docqa.generate import answer
-from docqa.generate.budget import plan_answer
 from docqa.generate.prompt import PROMPT_VERSION
 from docqa.index.embedder import Embedder, EmbeddingError
 from docqa.index.store import ChunkStore, StoreError
@@ -238,14 +237,7 @@ def evaluate(
                 continue
 
             retrieval = retrieve(question.question, config, **models)
-            # As the chat screen does it: the evidence is cut to what the answer model can
-            # read within generation.time_limit_s, at the speed measured on this machine.
-            plan = plan_answer(
-                config,
-                used_s=retrieval.elapsed_s,
-                read_chars_per_s=db.read_speed(config.llm.answer_model),
-            )
-            reply = answer(question.question, retrieval, llm, config, plan=plan)
+            reply = answer(question.question, retrieval, llm, config)
             by_id = {source.chunk.chunk_id: source.chunk for source in reply.sources}
             answered = not reply.refused
             results.append(
@@ -408,10 +400,8 @@ def _summary_markdown(
         f"- Embedding model: {config.embedding.model}",
         f"- Reranker: {config.reranker.model} (normalised scores: {config.reranker.normalize}, "
         f"8-bit weights: {config.reranker.quantize})",
-        f"- Candidates: {config.retrieval.candidates}, kept: {config.retrieval.top_k}, "
-        f"ranking time limit: {_limit(config.retrieval.rerank_time_limit_s)}",
+        f"- Candidates: {config.retrieval.candidates}, kept: {config.retrieval.top_k}",
         f"- Rerank threshold: {config.retrieval.rerank_score_threshold}",
-        *_time_limit_lines(results, config, retrieval_only),
         "",
         "Each cell is `passed/counted`. A question is counted only where the measure "
         "applies to it: `-` means it applied to none.",
@@ -431,22 +421,6 @@ def _summary_markdown(
         "",
     ]
     return "\n".join(lines)
-
-
-def _limit(seconds: float | None) -> str:
-    return "none" if seconds is None else f"{seconds:g} s"
-
-
-def _time_limit_lines(results: Sequence[QuestionResult], config: Config, retrieval_only: bool) -> list[str]:
-    """The time limit for an answer, and how many answers of this run took longer."""
-    limit = config.generation.time_limit_s
-    if retrieval_only or limit is None:
-        return [f"- Time limit for an answer: {_limit(limit)}"]
-    answered = [result for result in results if result.refused is False]
-    over = sum(result.latency_s > limit for result in answered)
-    return [
-        f"- Time limit for an answer: {_limit(limit)}. {over} of {len(answered)} answer(s) took longer."
-    ]
 
 
 def _suggestion_lines(suggestion: ThresholdSuggestion) -> list[str]:
@@ -495,6 +469,16 @@ def _flag(value: bool | None) -> str:
 # -- command line ---------------------------------------------------------------------
 
 
+def with_answer_model(config: Config, name: str) -> Config:
+    """The configuration with another answer model, and everything else as it is.
+
+    For comparing models on the same questions without editing ``config.yaml``: run
+    the evaluation once as configured and once with ``--answer-model``, then put the
+    two ``results.csv`` files side by side. Each run's ``summary.md`` names its model.
+    """
+    return config.model_copy(update={"llm": config.llm.model_copy(update={"answer_model": name})})
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m docqa.evaluate",
@@ -513,6 +497,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="propose retrieval.rerank_score_threshold from the questions (implies --retrieval-only)",
     )
     parser.add_argument("--out", help="folder for the results (default: a new one in paths.eval_results_dir)")
+    parser.add_argument(
+        "--answer-model",
+        metavar="NAME",
+        help="answer with this model instead of llm.answer_model, to compare two models "
+        "on the same questions; the model must be on the model server",
+    )
     args = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="replace")
@@ -520,6 +510,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         config = load_config(args.config)
+        if args.answer_model:
+            config = with_answer_model(config, args.answer_model)
         questions = load_questions(Path(args.questions) if args.questions else config.paths.eval_questions)
         if args.type:
             wanted = {kind.lower() for kind in args.type}

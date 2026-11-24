@@ -6,13 +6,9 @@
 Each function takes the embedding model, the store and the reranker as optional keyword
 arguments. Left out, the shared ones from ``docqa.resources`` are used.
 
-Reranking is the slow part, so two things are done about it here:
-
-- The candidates are scored a batch at a time, those that hybrid search placed highest
-  first, and ``retrieval.rerank_time_limit_s`` ends the scoring when it has taken that
-  long. What is left out is then what hybrid search thought least of.
-- A ``progress`` function, if one is given, is told as each step starts and ends and
-  after every batch, so that a screen can show where a question is.
+Reranking is the slow part of a search. Every candidate is scored, a batch at a time,
+and a ``progress`` function, if one is given, is told as each step starts and ends and
+after every batch, so that a screen can show where a question is.
 """
 
 from __future__ import annotations
@@ -25,7 +21,7 @@ from docqa.config import Config, ConfigError
 from docqa.index import searchable_text
 from docqa.index.embedder import Embedder
 from docqa.index.store import ChunkStore
-from docqa.retrieve.reranker import Reranker
+from docqa.retrieve.reranker import Reranker, RerankError
 from docqa.schema import Chunk, RetrievalResult, RetrievalTimings, ScoredChunk
 
 Progress = Callable[[str, str, dict[str, Any]], None]
@@ -117,54 +113,47 @@ def _rank(
 
     reranker = reranker or resources.get_reranker(config)
     tell("ranking", "start", {"of": len(fused)})
-    rerank_scores = _score_in_time(
+    rerank_scores = _score_in_batches(
         reranker,
         question,
         [searchable_text(chunks[chunk_id]) for chunk_id, _ in fused],
         config.reranker.batch_size,
-        config.retrieval.rerank_time_limit_s,
         tell,
     )
     ranked_s = time.perf_counter() - searched
-    tell("ranking", "end", {"took_s": ranked_s, "done": len(rerank_scores), "of": len(fused)})
+    tell("ranking", "end", {"took_s": ranked_s, "done": len(fused), "of": len(fused)})
     timings = RetrievalTimings(
         embed_s=embedded - started,
         search_s=searched - embedded,
         rerank_s=ranked_s,
-        candidates=len(rerank_scores),
-        candidates_found=len(fused),
+        candidates=len(fused),
     )
     scored = [
-        ScoredChunk(chunk=chunks[chunk_id], fusion_score=fusion_score, rerank_score=rerank_scores[position])
-        for position, (chunk_id, fusion_score) in enumerate(fused)
-        if position in rerank_scores
+        ScoredChunk(chunk=chunks[chunk_id], fusion_score=fusion_score, rerank_score=rerank_score)
+        for (chunk_id, fusion_score), rerank_score in zip(fused, rerank_scores, strict=True)
     ]
     # sorted() is stable, so chunks with equal rerank scores keep their fusion order.
     return sorted(scored, key=lambda item: item.rerank_score or 0.0, reverse=True), timings
 
 
-def _score_in_time(
+def _score_in_batches(
     reranker: Reranker,
     question: str,
     passages: Sequence[str],
     batch_size: int,
-    time_limit_s: float | None,
     tell: Progress,
-) -> dict[int, float]:
-    """Score the passages a batch at a time until all are done or the time is up.
+) -> list[float]:
+    """Score every passage, a batch at a time, saying after each batch how far it is.
 
-    Returns ``{position: score}`` for the passages that were scored. The passages
-    arrive best first (by hybrid search), and so does the work: the first batch is
-    always scored, and what a time limit leaves out is from the far end.
+    Returns one score per passage, in the order of ``passages``.
     """
-    began = time.perf_counter()
     scores: dict[int, float] = {}
     for batch in _batches(reranker, question, passages, batch_size):
         scores.update(batch)
         tell("ranking", "progress", {"done": len(scores), "of": len(passages)})
-        if time_limit_s is not None and time.perf_counter() - began >= time_limit_s:
-            break
-    return scores
+    if len(scores) != len(passages):
+        raise RerankError(f"The reranker returned {len(scores)} scores for {len(passages)} passages.")
+    return [scores[position] for position in range(len(passages))]
 
 
 def _batches(

@@ -381,7 +381,7 @@ def test_the_answer_shows_full_citations_although_the_model_wrote_short_labels(t
     request = llm.requests[0]
     assert request["model"] == "qwen2.5:7b"
     # Always read piece by piece, also when nobody is shown the pieces: that is how the
-    # wait for the first word is measured and how an answer can be stopped at the time limit.
+    # wait for the first word is measured.
     assert request["stream"] is True
     assert request["temperature"] == 0.0
     assert request["messages"] == build_messages("What is the processing fee on a home loan?", SOURCES, tmp_cfg)
@@ -420,6 +420,53 @@ def test_the_answer_is_streamed_piece_by_piece_and_timed(tmp_cfg):
     assert timings.first_token_s is not None and 0 <= timings.first_token_s <= timings.generation_s
     assert (timings.prompt_tokens, timings.completion_tokens) == (100, 20)
     assert timings.evidence_chars > 200
+
+
+def test_the_steps_of_an_answer_are_reported_as_they_happen(tmp_cfg):
+    llm = ScriptedLLM(tmp_cfg, "The fee is 0.50% of the loan amount [E1, p. 12].")
+    seen: list[tuple[str, str, dict]] = []
+    pieces: list[str] = []
+
+    def on_text(piece: str) -> None:
+        pieces.append(piece)
+        seen.append(("text", "", {}))
+
+    answer(
+        "fee?", found(), llm.client, tmp_cfg, on_text=on_text,
+        on_step=lambda step, state, details: seen.append((step, state, details)),
+    )
+
+    steps = [(step, state) for step, state, _ in seen if step != "text"]
+    assert steps == [("reading", "start"), ("reading", "end"), ("writing", "start"), ("writing", "end")]
+    # Reading ends, and writing starts, with the first word and not before it.
+    order = [step if step == "text" else f"{step} {state}" for step, state, _ in seen]
+    assert order.index("writing start") < order.index("text") < order.index("writing end")
+    start = seen[0][2]
+    assert start["passages"] == 3 and start["chars"] > 200
+    assert seen[1][2]["took_s"] >= 0 and seen[-1][2]["took_s"] >= 0
+
+
+def test_no_step_is_reported_when_nothing_was_found(tmp_cfg):
+    llm = ScriptedLLM(tmp_cfg, "never asked")
+    seen: list[str] = []
+    weak = RetrievalResult("q", (scored(FEES, 0.05),), found=False, best_score=0.05)
+
+    result = answer("weather?", weak, llm.client, tmp_cfg, on_step=lambda step, state, details: seen.append(step))
+
+    assert result.refused is True and seen == [] and llm.requests == []
+
+
+def test_an_answer_is_never_cut_short_for_time(tmp_cfg):
+    """However long the model takes, it is given all the evidence and writes to its end."""
+    long_reply = " ".join(f"Statement {number} holds [E1, p. 12]." for number in range(1, 80))
+    llm = ScriptedLLM(tmp_cfg, long_reply)
+
+    result = answer("fee?", found(elapsed=900.0), llm.client, tmp_cfg)
+
+    assert result.text.count("[Example Bank Lending Policy, p. 12]") == 79
+    assert result.evidence_ids == ("fees:00003", "fees:00004", "proc:00001")
+    assert not any("time" in note for note in result.notes)
+    assert result.latency_s >= 900.0
 
 
 def test_an_answer_can_be_stopped_while_it_is_being_written(tmp_cfg):
@@ -549,15 +596,8 @@ def test_every_answer_is_logged_with_its_chunks_scores_models_and_times(tmp_cfg)
     assert oldest.citations == [
         {"doc_title": "Example Bank Lending Policy", "page": 12, "chunk_id": "fees:00003"}
     ]
-    assert oldest.timings["retrieval"] == {
-        "embed_s": 0.2,
-        "search_s": 0.1,
-        "rerank_s": 1.2,
-        "candidates": 30,
-        "candidates_found": 0,
-    }
+    assert oldest.timings["retrieval"] == {"embed_s": 0.2, "search_s": 0.1, "rerank_s": 1.2, "candidates": 30}
     assert oldest.timings["completion_tokens"] == 20 and oldest.timings["evidence_chars"] > 0
-    # What the reading speed is measured from, and the limit the answer was planned for.
+    # What the answer model's reading speed is worked out from.
     assert oldest.timings["first_token_s"] is not None
-    assert oldest.timings["time_limit_s"] == 120 and oldest.timings["stopped_at_limit"] is False
     assert (newest.refused, newest.answer, newest.answer_model, newest.retrieved) == (True, NOT_FOUND, None, [])

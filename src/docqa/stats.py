@@ -21,7 +21,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from docqa.config import Config, ConfigError, load_config
-from docqa.db import Database, DocumentRecord, QueryStats
+from docqa.db import Database, DocumentRecord, ModelStats, QueryStats
 from docqa.index.store import ChunkStore, StoreError
 
 # Openings that most titles in a regulator's document set share. A list of names that
@@ -140,8 +140,8 @@ def index_stats(db: Database, store: ChunkStore | None = None) -> IndexStats:
     )
 
 
-def describe(index: IndexStats, queries: QueryStats) -> list[str]:
-    """The figures as lines of text."""
+def describe(index: IndexStats, queries: QueryStats, models: Sequence[ModelStats] = ()) -> list[str]:
+    """The figures as lines of text. ``models``: the same, for each answer model on its own."""
 
     def seconds(value: float | None) -> str:
         if value is None:
@@ -179,9 +179,26 @@ def describe(index: IndexStats, queries: QueryStats) -> list[str]:
         f"  median wait for the first word: {seconds(queries.median_first_token_s)}",
         f"  median reading speed: {reading}",
         f"  median writing speed: {speed}",
-        f"  stopped at the time limit: {queries.stopped_at_limit}",
         f"  last asked:          {queries.last_asked_at or 'never'}",
+        *_by_model(models, seconds),
     ]
+
+
+def _by_model(models: Sequence[ModelStats], seconds) -> list[str]:
+    """One line per answer model, so that two models can be compared after a change."""
+    if not models:
+        return []
+    lines = ["By answer model"]
+    for item in models:
+        parts = [f"{item.answers} answer(s)", f"median total {seconds(item.median_latency_s)}"]
+        if item.median_first_token_s is not None:
+            parts.append(f"first word after {seconds(item.median_first_token_s)}")
+        if item.median_read_chars_per_s is not None:
+            parts.append(f"reads {item.median_read_chars_per_s:.0f} characters/s")
+        if item.median_tokens_per_s is not None:
+            parts.append(f"writes {item.median_tokens_per_s:.1f} tokens/s")
+        lines.append(f"  {item.answer_model}: " + ", ".join(parts))
+    return lines
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -208,7 +225,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"(Passages by kind are left out: {exc})\n")
         store = None
     try:
-        print("\n".join(describe(index_stats(db, store), db.query_stats())))
+        print("\n".join(describe(index_stats(db, store), db.query_stats(), db.model_stats())))
     finally:
         resources.close_all()
     return 0

@@ -64,8 +64,7 @@ README.md  HANDOVER.md  design.md  AGENTS.md  COPILOT_PROMPT.md  COPILOT_UPDATE.
 - Hybrid search: BGE-M3 dense plus sparse, fused with reciprocal rank fusion, filtered by `access_group`.
 - Take the candidates, rerank, keep the top few. These numbers live in `config.yaml`:
   15 and 4 since 2026-11-23, set on the laptop that runs the models to shorten answers
-  (30 and 6 before). Ranking stops after `retrieval.rerank_time_limit_s` and uses the
-  candidates scored by then.
+  (30 and 6 before). Every candidate is reranked.
 - If the best rerank score is below the configured threshold, reply "I could not find this in the documents." and do not call the answer model.
 
 **Generation**
@@ -74,15 +73,15 @@ README.md  HANDOVER.md  design.md  AGENTS.md  COPILOT_PROMPT.md  COPILOT_UPDATE.
 - Quote numbers exactly, with units and reporting period. Do no arithmetic beyond what the source shows.
 - When an answer relies on a figure description, say so and tell the user to check the page, since the description is model-generated.
 - If two documents conflict, show both with their effective dates rather than picking one.
-- An answer should take at most two minutes (`generation.time_limit_s`), asked for on
-  2026-11-23. The evidence is cut to what the answer model can read in the time left,
-  and the writing stops when the time is up, at the end of a complete statement, with
-  a note that says so.
+- No time limit on an answer or on ranking. A limit can only be kept by giving the
+  models less to read, and that costs answers. (One was built on 2026-11-23 and taken
+  out on 2026-11-24, at my request.) Answers get faster through the flow and the
+  models instead: `notes/2026-11-24-faster-answers-without-limits.md`.
 
 **UI and logging**
 - Web chat page with streamed output (answers are slow on CPU). Show citations, and let the user expand each source: render tables as HTML and show figure images.
 - A side panel lists the ingested documents by a short name, with the full title on hover, and shows statistics: documents, pages, passages, questions asked, typical times.
-- Every answer shows a progress tracker: the step in hand, the time each step took, and the time used of the limit.
+- Every answer shows a progress tracker: the step in hand, how far it is, and the time each step took.
 - More PDFs can be ingested from the page itself ("+ Add"), by upload or from the documents folder. The same personal-data check applies as on the command line.
 - Log every query to SQLite: timestamp, question, retrieved chunk IDs and scores, answer, latency, time per step, model names.
 
@@ -112,11 +111,11 @@ laptops in use. On the one the code is written on, the venv lives outside OneDri
 `HANDOVER.md` has the setup for a new machine, the steps to update an existing copy,
 and what to try to make answers faster.
 
-State on 2026-11-23: every command below exists. Releases 2026-11-20 and 2026-11-23
-ran with the real models on the second laptop. The changes of release 2026-11-23b (the
-two-minute limit, the progress tracker, adding PDFs from the chat screen, the search
-models run from the project's own loop) have not been run with real models yet
-(`HANDOVER.md` says what was checked). The fast tests pass: 574.
+State on 2026-11-24: every command below exists. Releases 2026-11-20 and 2026-11-23
+ran with the real models on the second laptop. The changes since then (the progress
+tracker, adding PDFs from the chat screen, the search models run from the project's
+own loop) have not been run with real models yet (`HANDOVER.md` says what was
+checked). The fast tests pass: 555.
 
 ```
 & "$env:USERPROFILE\.venvs\docqa\Scripts\Activate.ps1"   # activate the venv (PowerShell, on the laptop the code is written on)
@@ -134,6 +133,7 @@ python -m docqa.ingest --help         # --force, --yes, --prune, --allow-flagged
 python -m docqa.evaluate --suggest-threshold   # propose retrieval.rerank_score_threshold
 python -m docqa.evaluate --retrieval-only      # judge the search alone, no answer model
 python -m docqa.evaluate              # run the test questions, write eval/results/<time>/
+python -m docqa.evaluate --answer-model NAME   # the same with another answer model, to compare two
 
 python -m docqa.web --open            # chat UI at http://127.0.0.1:8000. "+ Add" there ingests PDFs.
                                       # Stop it before running the ingest or evaluate command

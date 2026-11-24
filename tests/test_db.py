@@ -149,3 +149,54 @@ def test_a_document_can_be_found_by_the_content_of_its_file(tmp_path):
     assert database.find_document_by_hash("a" * 64).doc_id == "doc1"
     assert database.find_document_by_hash("b" * 64).source_path == "a copy of b.pdf"  # the first by path
     assert database.find_document_by_hash("c" * 64) is None
+
+
+# -- the answer model's reading speed -------------------------------------------------------
+
+
+def log_timings(database: Database, model: str, chars: int, waited: float, **more) -> None:
+    database._log(
+        question="q",
+        answer="a",
+        refused=more.pop("refused", False),
+        error=more.pop("error", None),
+        retrieved=[],
+        citations=[],
+        latency_s=waited + 5,
+        answer_model=model,
+        embedding_model="e",
+        reranker_model="r",
+        timings={"first_token_s": waited, "evidence_chars": chars, **more},
+    )
+
+
+def test_the_reading_speed_is_the_median_for_the_answer_model_in_use(tmp_path):
+    """Characters of evidence per second of waiting for the first word. The chat screen
+    uses it to say how long a reading will take; nothing is cut on the strength of it."""
+    database = Database(tmp_path / "docqa.sqlite")
+    assert database.read_speed("qwen2.5:7b") is None  # nothing has been answered yet
+
+    for chars, waited in ((3000, 60.0), (3000, 50.0), (3000, 30.0)):  # 50, 60 and 100 characters a second
+        log_timings(database, "qwen2.5:7b", chars, waited)
+    log_timings(database, "another-model:1b", 3000, 3.0)  # a faster model does not count for this one
+    log_timings(database, "qwen2.5:7b", 3000, 1.0, refused=True)  # nor does a refusal
+    log_timings(database, "qwen2.5:7b", 3000, 1.0, error="LLMTimeoutError")  # nor a failure
+    log_timings(database, "qwen2.5:7b", 0, 10.0)  # nor an answer without evidence
+
+    assert database.read_speed("qwen2.5:7b") == 60.0
+    assert database.read_speed("QWEN2.5:7B") == 60.0
+    assert database.read_speed("another-model:1b") == 1000.0
+    assert database.read_speed("another-model") is None  # "name" means "name:latest"
+    assert database.read_speed("not-used:7b") is None
+    assert database.read_speed("qwen2.5:7b", sample=1) == 100.0  # the latest answer only
+    assert database.query_stats().median_read_chars_per_s == 80.0  # over every answer: 50, 60, 100 and 1000
+
+
+def test_a_new_answer_changes_the_reading_speed_at_once(tmp_path):
+    database = Database(tmp_path / "docqa.sqlite")
+    log_timings(database, "qwen2.5:7b", 3000, 60.0)
+    assert database.read_speed("qwen2.5:7b") == 50.0
+
+    log_timings(database, "qwen2.5:7b", 3000, 20.0)
+
+    assert database.read_speed("qwen2.5:7b") == 100.0  # the median of 50 and 150

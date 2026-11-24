@@ -98,12 +98,10 @@ class BGEReranker:
     def score_batches(self, question: str, passages: Sequence[str]) -> Iterator[list[tuple[int, float]]]:
         """Score the passages a batch at a time: ``(position, score)`` pairs per batch.
 
-        A caller that has a time limit, or that shows progress, takes the batches one
-        by one; nothing is computed for a batch until it is asked for. A batch holds
-        passages of similar length, so that little padding is computed. The batch that
-        holds the first passage comes first, then the one that holds the earliest
-        passage not yet scored, and so on: when the passages are in order of promise,
-        stopping early leaves out the least promising ones.
+        A caller that shows progress takes the batches one by one; nothing is computed
+        for a batch until it is asked for. A batch holds passages of similar length, so
+        that little padding is computed. The batch that holds the first passage comes
+        first, then the one that holds the earliest passage not yet scored, and so on.
         """
         if not passages:
             return

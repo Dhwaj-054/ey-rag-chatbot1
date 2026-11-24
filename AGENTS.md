@@ -12,10 +12,9 @@ accurate, cited answers on the questions in `eval/questions.csv`.
 
 Current state: all code is written and unit-tested with fakes in place of the models.
 Releases 2026-11-20 and 2026-11-23 ran with the real models on a second laptop. The
-changes of release 2026-11-23b have not: a time limit of two minutes for an answer, a
-progress tracker on the answer, adding PDFs from the chat screen, and the search
-models run from the project's own loop. `HANDOVER.md` says exactly what was checked,
-and what to try to make answers faster.
+changes since then have not: a progress tracker on the answer, adding PDFs from the
+chat screen, and the search models run from the project's own loop. `HANDOVER.md`
+says exactly what was checked, and what to try to make answers faster.
 
 ## Hard rules
 
@@ -57,9 +56,11 @@ and what to try to make answers faster.
 - If two documents conflict, show both with their effective dates.
 - If the best rerank score is below the configured threshold, reply "I could not find
   this in the documents." and do not call the answer model.
-- An answer has a time limit (`generation.time_limit_s`). The evidence is cut to what
-  the model can read in the time left, and the writing stops when the time is up, at
-  the end of a complete statement, with a note that says so.
+- There is no time limit on an answer or on ranking, on purpose. One was built on
+  2026-11-23 and taken out the next day at the project owner's request: it could only
+  be kept by giving the models less to read. Do not bring one back. What may make
+  answers faster is in `notes/2026-11-24-faster-answers-without-limits.md`, and a
+  different model is the owner's decision.
 
 ## Where things are
 
@@ -72,8 +73,7 @@ src/docqa/resources.py    models and the vector store, loaded once and shared
 src/docqa/ingest/         hash -> parse (Docling) -> describe figures -> chunk
 src/docqa/index/          embed (BGE-M3) and store (Qdrant)
 src/docqa/retrieve/       hybrid search, rank fusion, rerank, refusal
-src/docqa/generate/       prompt, answer, citation checking, query log;
-                          budget.py fits an answer into the time limit
+src/docqa/generate/       prompt, answer, citation checking, query log
 src/docqa/web/            chat screen: server.py (Starlette), static/ (the page) and
                           ingestion.py (adding documents from the screen)
 src/docqa/stats.py        what is indexed, and how long questions take
@@ -96,6 +96,7 @@ pytest -m slow                             tests that need the real models
 python -m docqa.ingest docs --limit 3      parse, describe, chunk and index
 python -m docqa.ingest docs --ingested-only   bring what is indexed up to date, start nothing new
 python -m docqa.evaluate                   run the test questions
+python -m docqa.evaluate --answer-model NAME   the same with another answer model
 python -m docqa.web --open                 chat screen, at http://127.0.0.1:8000
 python -m docqa.stats                      what is indexed, and typical times per step
 ```

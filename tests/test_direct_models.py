@@ -142,7 +142,7 @@ def test_batches_hold_inputs_of_similar_length():
 
 
 def test_the_batch_with_the_first_input_is_run_first():
-    """Inputs arrive most promising first. Stopping early must not leave the best one out."""
+    """The work goes roughly in the order the inputs arrived."""
     lengths = [10, 90, 12, 85, 11, 88, 50]
 
     batches = batches_by_length(lengths, 3)
